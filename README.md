@@ -35,12 +35,19 @@ le *jour* ni la *récurrence*. Il pose toutes ses questions dans un seul message
 avec sa suggestion par défaut, puis attend. Un hook `PreToolUse` **refuse** `add-tasks`
 tant qu'il manque l'un de ces champs — ou tant que les libellés du compte n'ont pas été lus.
 
-**Règle n°2 — tout déplacement se valide.** Créer dans un trou libre : il le fait.
-Toucher à l'existant (`reschedule`, `update`, `delete`, `move`, `reorder`) : il expose le
-conflit, propose les options (*en parallèle ?* / *je décale telle tâche à tel jour ?*) et
-attend le feu vert. Ces outils déclenchent **toujours** une carte de validation, même quand
-« créer et terminer sans confirmer » est actif — et sans bouton *Toujours* : chaque
-déplacement se valide un par un.
+**Règle n°2 — ce qu'il bouscule se valide.** Ce que tu demandes, il le fait : tu n'as pas
+à revalider ta propre consigne (« décale Tâche A à lundi 9h30 » → il décale, il confirme).
+La carte de validation ne sort que pour ce que tu **n'as pas** demandé : la tâche déplacée
+d'autorité pour en caser une autre, la priorité changée au passage, le ménage proposé.
+Il expose alors le conflit, propose les options (*en parallèle ?* / *je décale telle tâche
+à tel jour ?*) et attend le feu vert.
+
+`src/agent/intent.mjs` fait ce tri : il compare les tâches visées par l'outil aux noms que
+tu viens d'employer (accents et casse ignorés, un mot distinctif suffit), gère la reprise
+pronominale (« décale-la à demain ») et la désactive quand le tour vient de créer une
+tâche — précisément le cas où l'agent bouscule l'existant pour caser la nouvelle. Restent
+toujours confirmées : la suppression d'un projet, d'une section ou d'un libellé, et les
+réorganisations en masse. `node scripts/intent-test.mjs` couvre ces cas.
 
 Autres garanties :
 

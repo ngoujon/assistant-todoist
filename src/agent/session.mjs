@@ -7,6 +7,7 @@ import { buildSystemPrompt } from './prompt.mjs'
 import { TodoistGuard } from './guards.mjs'
 import { TaskRegistry } from './registry.mjs'
 import { summarizePermission } from './summary.mjs'
+import { wasRequested } from './intent.mjs'
 
 const HOME = os.homedir()
 const require = createRequire(import.meta.url)
@@ -105,6 +106,10 @@ export class AgentSession {
     this.registry = new TaskRegistry()
     this.readyTimer = null
     this.retries = 0
+    /** Derniers messages de l’utilisateur : servent a savoir s'il a demande le changement. */
+    this.recentUserText = []
+    /** Une tache a-t-elle ete creee dans le tour courant ? (cas du bousculage) */
+    this.createdThisTurn = false
   }
 
   get running() { return this.q !== null }
@@ -235,6 +240,9 @@ export class AgentSession {
   send(text) {
     if (!this.q) this.start({})
     this.markBusy()
+    this.recentUserText.unshift(text)
+    this.recentUserText.length = Math.min(this.recentUserText.length, 3)
+    this.createdThisTurn = false
     this.emit({ k: 'turn-start' })
     this.queue.push({
       type: 'user',
@@ -319,6 +327,7 @@ export class AgentSession {
         const alreadyStreamed = id && this.streamedMessages.has(id)
         for (const block of msg.message?.content || []) {
           if (block.type === 'tool_use') {
+            if (block.name === 'mcp__todoist__add-tasks') this.createdThisTurn = true
             this.toolNames.set(block.id, block.name)
             this.emit({ k: 'tool-use', id: block.id, name: block.name, input: block.input })
           } else if (block.type === 'text' && !alreadyStreamed && block.text?.trim()) {
@@ -373,6 +382,18 @@ export class AgentSession {
       if (SAFE_BUILTIN.has(toolName)) return { behavior: 'allow', updatedInput: input }
       if (TODOIST_READONLY.test(toolName)) return { behavior: 'allow', updatedInput: input }
       if (cfg.autoTodoist && TODOIST_ANY.test(toolName)) return { behavior: 'allow', updatedInput: input }
+    } else if (cfg.autoTodoist) {
+      // Valider ce que l’utilisateur vient de demander n'apporte rien : la carte ne sert
+      // qu'aux changements qu'il n'a pas demandes — typiquement une tache bousculee
+      // pour en caser une autre.
+      const intent = wasRequested({
+        toolName,
+        input,
+        registry: this.registry,
+        recentUserText: this.recentUserText,
+        createdThisTurn: this.createdThisTurn,
+      })
+      if (intent.requested) return { behavior: 'allow', updatedInput: input }
     }
 
     const summary = summarizePermission(toolName, input, this.registry)
