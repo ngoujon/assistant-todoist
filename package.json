@@ -1,0 +1,23 @@
+{
+  "name": "todoist-helper",
+  "productName": "Assistant Todoist",
+  "version": "1.0.0",
+  "private": true,
+  "type": "module",
+  "description": "Assistant de planification qui pilote Todoist (Claude Agent SDK + MCP Todoist)",
+  "author": "ngoujon",
+  "main": "src/main.mjs",
+  "scripts": {
+    "start": "electron .",
+    "icon": "bash scripts/make-icon.sh",
+    "build": "bash scripts/build-app.sh",
+    "install-app": "bash scripts/install-app.sh"
+  },
+  "dependencies": {
+    "@anthropic-ai/claude-agent-sdk": "^0.3.250"
+  },
+  "devDependencies": {
+    "@electron/packager": "^18.4.4",
+    "electron": "^44.0.0"
+  }
+}
