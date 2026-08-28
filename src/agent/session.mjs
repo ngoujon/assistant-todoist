@@ -44,11 +44,27 @@ function resolveClaudeExecutable() {
 
 /** Outils Todoist en lecture seule : jamais de confirmation. */
 const TODOIST_READONLY = /^mcp__todoist__(find|get|search|fetch|list|analyze|export|user-info|view)/
+/** Outils qui deplacent ou suppriment, quel que soit leur contenu. */
+const TODOIST_DISRUPTIVE = /^mcp__todoist__(reschedule|delete|move|reorder|manage|import|project-)/
 /**
- * Outils qui touchent a l'existant (deplacer, modifier, supprimer, reordonner).
- * Regle n°2 : validation obligatoire, meme quand « modifier Todoist sans confirmer » est actif.
+ * Regle n°2 : seul ce qui deplace ou supprime se valide. Retoucher un libelle, une
+ * priorite, une duree ou un titre est reversible d'un mot : ca ne merite pas un clic.
  */
-const TODOIST_ALWAYS_ASK = /^mcp__todoist__(reschedule|update|delete|move|reorder|uncomplete|manage|import|project-)/
+function movesOrRemoves(toolName, input, registry) {
+  if (TODOIST_DISRUPTIVE.test(toolName)) return true
+  if (toolName !== 'mcp__todoist__update-tasks') return false
+  const tasks = Array.isArray(input?.tasks) ? input.tasks : []
+  return tasks.some((task) => {
+    if (!task || typeof task !== 'object') return false
+    const fields = Object.keys(task)
+    // Changer de projet, de section ou de parent : c'est un deplacement.
+    if (fields.some((k) => /^(projectId|sectionId|parentId)$/.test(k))) return true
+    if (!fields.some((k) => /^(due|deadlineDate$)/.test(k))) return false
+    // Dater une tache qui n'avait pas de date revient a la creer : rien n'est bouscule.
+    // Ecraser une date existante, si.
+    return Boolean(registry?.task(task.id)?.due)
+  })
+}
 /** Tout outil Todoist. */
 const TODOIST_ANY = /^mcp__todoist__/
 /** Outils internes sans effet de bord. */
@@ -103,10 +119,10 @@ export class AgentSession {
     this.busy = false
     this.streamedMessages = new Set()
     this.toolNames = new Map()
-    this.guard = new TodoistGuard()
     // La mémoire des tâches survit aux redémarrages : sans elle, une conversation
     // reprise afficherait « tâche a1B2 » au lieu du nom dans les validations.
     this.registry = new TaskRegistry(tasksSnapshot)
+    this.guard = new TodoistGuard(this.registry, () => this.recentUserText.join(' '))
     this.readyTimer = null
     this.retries = 0
     /**
@@ -171,7 +187,7 @@ export class AgentSession {
     this.resumeId = resume || null
     this.resumeNotified = false
     this.streamedMessages = new Set()
-    this.guard = new TodoistGuard()
+    this.guard = new TodoistGuard(this.registry, () => this.recentUserText.join(' '))
     this.q = query({ prompt: this.queue, options: this.buildOptions(resume) })
     this.emit({ k: 'status', state: 'connecting' })
     this.pump()
@@ -409,7 +425,7 @@ export class AgentSession {
 
   async handlePermission(toolName, input, opts) {
     const cfg = this.getConfig()
-    const touchesExisting = TODOIST_ALWAYS_ASK.test(toolName)
+    const touchesExisting = movesOrRemoves(toolName, input, this.registry)
 
     if (!touchesExisting) {
       if (SAFE_BUILTIN.has(toolName)) return { behavior: 'allow', updatedInput: input }
@@ -446,7 +462,7 @@ export class AgentSession {
       displayName: opts?.displayName,
       subtitle: opts?.subtitle,
       reason: opts?.decisionReason,
-      hint: touchesExisting ? 'Cette action modifie des tâches existantes.' : undefined,
+      hint: touchesExisting ? 'Cette action déplace ou supprime des tâches existantes.' : undefined,
       allowAlways: !touchesExisting,
       signal: opts?.signal,
     })

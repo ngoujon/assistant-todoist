@@ -59,6 +59,7 @@ export class TaskRegistry {
         this.tasks.set(id, {
           content: node.content,
           due: dueLabel(node),
+          recurring: node.recurring === true || node.due?.isRecurring === true,
           priority: node.priority,
           labels: Array.isArray(node.labels) ? node.labels : undefined,
           duration: durationLabel(node),

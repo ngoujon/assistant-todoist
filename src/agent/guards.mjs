@@ -9,8 +9,17 @@ const ASK_INSTRUCTIONS =
   'Pose la question à l’utilisateur dans un seul message, en liste numérotée, avec ta suggestion par défaut ' +
   'pour chaque point, puis attends sa réponse. Ne rappelle pas cet outil avant qu\'il ait répondu.'
 
+/** Formulations qui assument une tâche sans échéance. */
+const NO_DATE_WANTED = /\b(sans date|pas de date|sans echeance|sans échéance|pas d.echeance|pas d.échéance|backlog|un jour|plus tard|quand j.aurai|reservoir|réservoir)\b/i
+
 export class TodoistGuard {
-  constructor() {
+  /**
+   * @param {object} registry TaskRegistry, pour savoir si une tâche est récurrente
+   * @param {() => string} getUserText texte récent de l’utilisateur, pour reconnaître un backlog assumé
+   */
+  constructor(registry, getUserText) {
+    this.registry = registry
+    this.getUserText = getUserText || (() => '')
     /** Libellés réellement présents dans le compte, alimentés par find-labels. */
     this.knownLabels = null
   }
@@ -71,7 +80,9 @@ export class TodoistGuard {
 
       if (!task?.priority) missing.push('la priorité (p1, p2, p3 ou p4)')
       if (!task?.duration) missing.push('la durée estimée')
-      if (!task?.dueString && !task?.deadlineDate) {
+      // Une tâche de réservoir (p4, ou demandée « sans date ») n'a pas à être datée.
+      const datelessOk = task?.priority === 'p4' || NO_DATE_WANTED.test(this.getUserText())
+      if (!task?.dueString && !task?.deadlineDate && !datelessOk) {
         missing.push('le jour / l\'heure (et s\'il faut une récurrence)')
       }
 
@@ -100,14 +111,22 @@ export class TodoistGuard {
     return `Création bloquée.\n${problems.join('\n')}\n${ASK_INSTRUCTIONS}`
   }
 
+  /**
+   * `update-tasks` écrase la date et, avec elle, la récurrence. On ne bloque donc que
+   * les tâches qu'on sait récurrentes : sur une tâche sans date, `update-tasks` est le
+   * seul chemin possible — `reschedule-tasks` exige une date existante.
+   */
   checkUpdateTasks(toolInput) {
     const tasks = Array.isArray(toolInput?.tasks) ? toolInput.tasks : [toolInput].filter(Boolean)
-    const touchesDate = tasks.some((task) =>
-      task && typeof task === 'object' && Object.keys(task).some((k) => /^due/i.test(k) || k === 'deadlineDate'),
-    )
-    if (!touchesDate) return null
-    return 'Modification bloquée : `update-tasks` écrase la date et détruit la récurrence. ' +
-      'Pour déplacer une tâche dans le temps, utilise `mcp__todoist__reschedule-tasks` — ' +
-      'et annonce le déplacement à l’utilisateur avant de le lancer.'
+    const guilty = tasks.filter((task) => {
+      if (!task || typeof task !== 'object') return false
+      const touchesDate = Object.keys(task).some((k) => /^due/i.test(k) || k === 'deadlineDate')
+      return touchesDate && this.registry?.task(task.id)?.recurring === true
+    })
+    if (!guilty.length) return null
+    const names = guilty.map((t) => this.registry?.taskName(t.id) || t.id).join(', ')
+    return `Modification bloquée sur une tâche récurrente (${names}) : \`update-tasks\` ` +
+      'écraserait la récurrence. Utilise `mcp__todoist__reschedule-tasks` pour la déplacer. ' +
+      '(Sur une tâche sans date, `update-tasks` avec `dueString` reste le bon outil.)'
   }
 }

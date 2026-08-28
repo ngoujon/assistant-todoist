@@ -35,9 +35,16 @@ le *jour* ni la *récurrence*. Il pose toutes ses questions dans un seul message
 avec sa suggestion par défaut, puis attend. Un hook `PreToolUse` **refuse** `add-tasks`
 tant qu'il manque l'un de ces champs — ou tant que les libellés du compte n'ont pas été lus.
 
+**Il a la main sur les métadonnées.** Libellé faux, priorité incohérente, durée absurde,
+titre bancal : il corrige et il le signale — sans demander, c'est réversible d'un mot.
+
 **Règle n°2 — ce qu'il bouscule se valide.** Ce que tu demandes, il le fait : tu n'as pas
 à revalider ta propre consigne (« décale Tâche A à lundi 9h30 » → il décale, il confirme).
-La carte de validation ne sort que pour ce que tu **n'as pas** demandé : la tâche déplacée
+Ne déclenchent une carte que les actions qui **déplacent ou suppriment** : `reschedule`,
+`delete`, un changement de projet ou de section, la réécriture d'une date existante. Un
+`update-tasks` qui ne touche qu'aux libellés, à la priorité, à la durée ou au titre passe
+seul — et dater une tâche qui n'avait pas de date revient à la créer, donc pas de carte
+non plus. Parmi celles-là, la carte ne sort que pour ce que tu **n'as pas** demandé : la tâche déplacée
 d'autorité pour en caser une autre, la priorité changée au passage, le ménage proposé.
 Il expose alors le conflit, propose les options (*en parallèle ?* / *je décale telle tâche
 à tel jour ?*) et attend le feu vert.
@@ -62,8 +69,12 @@ Autres garanties :
   les `ancien-*` et la coquille `coquille`, et ne crée jamais un libellé sans accord. Le hook
   rejette tout libellé inconnu.
 - **Récurrence** : appliquée en langage naturel si elle est précisée, demandée si elle est
-  ambiguë. `update-tasks` portant une date est refusé par le hook — il détruirait la
-  récurrence, `reschedule-tasks` est le bon outil.
+  ambiguë. Le hook refuse `update-tasks` avec une date **sur une tâche récurrente** (ça
+  écraserait la récurrence) et renvoie vers `reschedule-tasks`.
+- **Dates** : `reschedule-tasks` déplace une tâche déjà datée ; `update-tasks` avec
+  `dueString` est le seul moyen de dater une tâche qui n'en a pas.
+- **Tâches sans date** : une tâche `p4` — ou demandée « sans date », « backlog », « un
+  jour » — se crée sans échéance ; le hook ne l'exige que pour le reste.
 
 ## Les cartes de validation
 
@@ -145,6 +156,7 @@ npm run install-app           # copie dans /Applications + épingle au Dock
 node scripts/selftest.mjs     # test d'intégration : vraie session agent + Todoist
 node scripts/intent-test.mjs  # « est-ce que l’utilisateur a demandé ce changement ? »
 node scripts/impact-test.mjs  # modèle avant/après d'un déplacement
+node scripts/permission-test.mjs  # ce qui ouvre une carte, ce qui passe seul
 npx electron scripts/preview.mjs sortie.png   # capture l'UI avec une conversation factice
 THEME=dark npx electron scripts/preview.mjs   # idem en thème sombre
 ```
@@ -179,5 +191,10 @@ sur Apple Silicon : `scripts/build-app.sh` s'en charge.
 - La mémoire des tâches (`taches-connues.json` dans le dossier de l'app) doit survivre au
   redémarrage : sans elle, une conversation reprise affiche « une tâche non identifiée »
   dans les validations et le schéma d'impact ne peut pas se dessiner.
+- `reschedule-tasks` **exige une date existante** : un garde-fou qui renvoie systématiquement
+  `update-tasks` vers lui enferme l'agent dans un cul-de-sac sur une tâche non datée — les
+  deux chemins se ferment et la tâche ne peut plus être datée du tout.
+- Un garde-fou qui exige une date à la création rend impossible la tâche de réservoir,
+  et l'agent boucle : il redemande le jour, on répond « pas de date », il est rebloqué.
 - Ne pas mettre d'accélérateur `Esc` sur un élément de menu : il capterait la touche avant
   l'interface, qui en a besoin pour refuser une validation.
