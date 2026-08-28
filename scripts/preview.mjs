@@ -32,11 +32,31 @@ const SCRIPT = [
       toolName: 'mcp__todoist__reschedule-tasks',
       hint: 'Cette action modifie des tâches existantes.',
       allowAlways: false,
-      title: 'Déplacer « Tâche B » ?',
-      summary: {
-        lines: ['« Tâche B »\nsamedi 29 août à 14h → lundi 31 août à 9h'],
+      title: 'Déplacer « Tâche A » ?',
+      summary: { lines: ['« Tâche A »\nsamedi 29 août à 9h30 → lundi 31 août à 9h45'] },
+      impact: {
+        days: [
+          {
+            day: '2026-08-31',
+            label: 'lundi 31 août',
+            from: 480,
+            to: 900,
+            before: [
+              { id: 'B', name: 'Tâche B', start: 540, end: 660, kind: 'stay' },
+              { id: 'C', name: 'Tâche C', start: 690, end: 735, kind: 'stay' },
+              { id: 'E', name: 'Tâche D', start: 780, end: 810, kind: 'stay' },
+            ],
+            after: [
+              { id: 'B', name: 'Tâche B', start: 540, end: 660, kind: 'stay' },
+              { id: 'A', name: 'Tâche A', start: 615, end: 675, kind: 'moved' },
+              { id: 'C', name: 'Tâche C', start: 690, end: 735, kind: 'stay' },
+              { id: 'E', name: 'Tâche D', start: 780, end: 810, kind: 'stay' },
+            ],
+          },
+        ],
+        conflicts: [{ day: '2026-08-31', moved: 'Tâche A', against: 'Tâche B' }],
       },
-      input: { tasks: [{ id: '8412', date: '2026-08-31T09:00:00' }] },
+      input: { tasks: [{ id: 'A', date: '2026-08-31T09:45:00' }] },
     },
   },
 ]

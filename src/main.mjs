@@ -48,6 +48,31 @@ function saveConfig() {
   }, 300)
 }
 
+// --------------------------------------------------- memoire des taches vues
+
+let tasksPath = ''
+let tasksSaveTimer = null
+
+function loadTasksSnapshot() {
+  tasksPath = path.join(app.getPath('userData'), 'taches-connues.json')
+  try {
+    return JSON.parse(fs.readFileSync(tasksPath, 'utf8'))
+  } catch {
+    return null
+  }
+}
+
+function saveTasksSnapshot() {
+  if (!session?.registry?.dirty) return
+  clearTimeout(tasksSaveTimer)
+  tasksSaveTimer = setTimeout(() => {
+    try {
+      fs.writeFileSync(tasksPath, JSON.stringify(session.registry.snapshot()))
+      session.registry.dirty = false
+    } catch {}
+  }, 500)
+}
+
 function ensureWorkspace() {
   workspace = path.join(app.getPath('userData'), 'Espace de travail')
   fs.mkdirSync(workspace, { recursive: true })
@@ -157,6 +182,7 @@ function askPermission(req) {
       subtitle: req.subtitle,
       reason: req.reason,
       summary: req.summary,
+      impact: req.impact,
       hint: req.hint,
       allowAlways: req.allowAlways !== false,
       input: req.input,
@@ -290,11 +316,13 @@ if (!app.requestSingleInstanceLock()) {
           config.lastSessionId = evt.sessionId
           saveConfig()
         }
+        if (evt.k === 'result') saveTasksSnapshot()
         emit(evt)
       },
       askPermission,
       getConfig: () => config,
       workspace,
+      tasksSnapshot: loadTasksSnapshot(),
     })
     // Filet de securite : une panne au demarrage de l'agent doit se voir dans l'interface,
     // pas seulement dans la console.

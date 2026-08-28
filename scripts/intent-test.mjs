@@ -20,6 +20,10 @@ const cases = [
   ['terminer une tâche nommée', { toolName: 'mcp__todoist__complete-tasks', input: { ids: ['C'] }, recentUserText: ['coche Tâche C cest fait'] }, true],
   ['modification non demandée', { toolName: 'mcp__todoist__update-tasks', input: { tasks: [{ id: 'B', priority: 'p1' }] }, recentUserText: ['organise ma semaine'] }, false],
   ['réorganisation en masse', { toolName: 'mcp__todoist__reorder-objects', input: { items: [1, 2] }, recentUserText: ['reordonne mes taches'] }, false],
+  ['ensemble désigné par la date', { toolName: 'mcp__todoist__reschedule-tasks', input: { tasks: [{ id: 'A', date: 'x' }, { id: 'B', date: 'y' }] }, recentUserText: ['decale mes taches de vendredi a lundi'] }, true],
+  ['ensemble « en retard »', { toolName: 'mcp__todoist__reschedule-tasks', input: { tasks: [{ id: 'A', date: 'x' }, { id: 'C', date: 'y' }] }, recentUserText: ['repousse tout ce qui est en retard a demain'] }, true],
+  ['ensemble mais création en cours', { toolName: 'mcp__todoist__reschedule-tasks', input: { tasks: [{ id: 'B', date: 'y' }] }, recentUserText: ['mets la tâche D cet apres midi'], createdThisTurn: true }, false],
+  ['délégation sans verbe d\'action', { toolName: 'mcp__todoist__reschedule-tasks', input: { tasks: [{ id: 'B', date: 'y' }] }, recentUserText: ['organise ma semaine'] }, false],
 ]
 
 let ko = 0

@@ -326,6 +326,100 @@ main::-webkit-scrollbar-track { background: transparent; }
 }
 .tool.open .body { display: block; }
 
+/* ------------------------------------------------- impact d'un déplacement */
+
+.impact { display: flex; flex-direction: column; gap: 10px; }
+.imp-day { display: flex; flex-direction: column; gap: 5px; }
+.imp-label { font-size: 11.5px; font-weight: 600; color: var(--text-dim); }
+.imp-label::first-letter { text-transform: uppercase; }
+.imp-allday { display: flex; flex-wrap: wrap; gap: 4px; }
+.imp-chip {
+  font-size: 10.5px;
+  padding: 1px 7px;
+  border-radius: 20px;
+  background: var(--surface);
+  color: var(--text-dim);
+}
+
+/* minmax(0, 1fr) : sans ça le contenu impose sa largeur et les colonnes débordent. */
+.imp-grid { display: grid; grid-template-columns: 28px minmax(0, 1fr) minmax(0, 1fr); gap: 6px; }
+.imp-head {
+  height: 15px;
+  font-size: 10.5px;
+  color: var(--text-faint);
+  text-align: center;
+}
+.imp-track {
+  position: relative;
+  height: 118px;
+  border-radius: 8px;
+  background: var(--code-bg);
+  overflow: hidden;
+}
+.imp-hours .imp-track { background: none; overflow: visible; }
+.imp-hour {
+  position: absolute;
+  right: 3px;
+  transform: translateY(-50%);
+  font-size: 9.5px;
+  color: var(--text-faint);
+  font-variant-numeric: tabular-nums;
+}
+.imp-line {
+  position: absolute;
+  left: 0;
+  right: 0;
+  border-top: 1px solid var(--border);
+}
+.imp-empty {
+  position: absolute;
+  inset: 0;
+  display: grid;
+  place-items: center;
+  font-size: 10.5px;
+  color: var(--text-faint);
+}
+
+.imp-block {
+  position: absolute;
+  left: 2px;
+  right: 2px;
+  border-radius: 5px;
+  padding: 1px 4px;
+  overflow: hidden;
+  font-size: 9.5px;
+  line-height: 1.25;
+  background: var(--surface);
+  border: 1px solid var(--border-strong);
+  color: var(--text-dim);
+}
+.imp-block .imp-time { display: block; font-variant-numeric: tabular-nums; opacity: 0.75; }
+.imp-block.short { padding: 0 4px; display: flex; align-items: center; }
+.imp-block.short .imp-time { display: none; }
+.imp-block.short .imp-name { -webkit-line-clamp: 1; }
+.imp-block .imp-name {
+  word-break: break-word;
+  display: -webkit-box;
+  -webkit-line-clamp: 2;
+  -webkit-box-orient: vertical;
+  overflow: hidden;
+  color: var(--text);
+}
+.imp-block.moved {
+  background: linear-gradient(150deg, var(--accent-2), var(--accent));
+  border-color: transparent;
+  color: #fff;
+}
+.imp-block.moved .imp-name { color: #fff; }
+.imp-block.leaving { opacity: 0.45; border-style: dashed; }
+.imp-block.clash { outline: 2px solid var(--danger); outline-offset: -2px; }
+
+.imp-clash {
+  font-size: 11px;
+  color: var(--danger);
+  font-weight: 560;
+}
+
 /* -------------------------------------------------------------- permission */
 
 .perm {

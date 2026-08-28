@@ -42,6 +42,11 @@ d'autorité pour en caser une autre, la priorité changée au passage, le ménag
 Il expose alors le conflit, propose les options (*en parallèle ?* / *je décale telle tâche
 à tel jour ?*) et attend le feu vert.
 
+La validation est aussi **ponctuelle** : accepter un premier déplacement vaut pour tous
+ceux du même tour (les suppressions gardent leur propre validation). Et une demande qui
+désigne un ensemble — « décale mes tâches de vendredi à lundi », « repousse tout ce qui
+est en retard » — passe sans carte, comme une demande nommée.
+
 `src/agent/intent.mjs` fait ce tri : il compare les tâches visées par l'outil aux noms que
 tu viens d'employer (accents et casse ignorés, un mot distinctif suffit), gère la reprise
 pronominale (« décale-la à demain ») et la désactive quand le tour vient de créer une
@@ -62,10 +67,18 @@ Autres garanties :
 
 ## Les cartes de validation
 
-Elles disent en clair ce qui va se passer — nom de la tâche, ancienne date → nouvelle date,
+**Un déplacement se dessine.** La carte montre la journée touchée *avant* et *après*, à
+l'échelle : ce qui reste en place, ce qui part (en pointillé), ce qui arrive (en corail),
+et les blocs qui se chevauchent — côte à côte, cerclés de rouge, avec la ligne
+« Chevauchement : X × Y ». `src/agent/impact.mjs` calcule le modèle à partir des tâches
+que l'agent a déjà lues, `src/renderer/impact.js` le dessine.
+
+Sous le schéma, la phrase en clair — nom de la tâche, ancienne date → nouvelle date,
 champs modifiés — et non le JSON de l'outil (`src/agent/summary.mjs` traduit, avec
-`registry.mjs` qui garde en mémoire les tâches croisées pour résoudre les identifiants).
-Le détail technique reste accessible d'un clic.
+`registry.mjs` qui résout les identifiants). Le détail technique reste à un clic.
+
+L'app signale aussi une limite d'usage Claude atteinte ou proche : sans ça, une réponse
+qui n'arrive jamais ressemble à un bug.
 
 Au clavier, quand une carte attend : **`↩` autorise**, **`esc` refuse**. `↩` n'autorise que
 si le champ de saisie est vide — sinon la phrase en cours part comme message, elle ne
@@ -101,7 +114,9 @@ src/agent/prompt.mjs   personnalité et règles métier (PROMPT_VERSION à incr�
 src/agent/guards.mjs   hooks PreToolUse : refusent l'outil tant qu'il manque une info
 src/agent/registry.mjs mémoire id -> nom des objets Todoist croisés
 src/agent/summary.mjs  traduction d'une demande d'autorisation en français lisible
-src/renderer/          interface : chat, markdown maison, cartes d'outils et de permission
+src/agent/intent.mjs   « L’utilisateur a-t-il demandé ce changement ? » (sinon : carte)
+src/agent/impact.mjs   modèle avant/après d'un déplacement, avec chevauchements
+src/renderer/          interface : chat, markdown maison, cartes d'outils, schéma d'impact
 scripts/               icône, build, installation, prévisualisation, test d'intégration
 ```
 
@@ -128,6 +143,8 @@ npm run build                 # produit build/Assistant Todoist.app (signature a
 npm run install-app           # copie dans /Applications + épingle au Dock
 
 node scripts/selftest.mjs     # test d'intégration : vraie session agent + Todoist
+node scripts/intent-test.mjs  # « est-ce que l’utilisateur a demandé ce changement ? »
+node scripts/impact-test.mjs  # modèle avant/après d'un déplacement
 npx electron scripts/preview.mjs sortie.png   # capture l'UI avec une conversation factice
 THEME=dark npx electron scripts/preview.mjs   # idem en thème sombre
 ```
@@ -156,5 +173,11 @@ sur Apple Silicon : `scripts/build-app.sh` s'en charge.
 - L'occupation de l'agent ne peut pas se compter en envois : deux messages peuvent être
   fondus dans un seul tour, donc un seul `result`. Elle suit son activité réelle.
 - `init` peut arriver plusieurs fois dans une session — dédupliquer les notes qui en dépendent.
+- La reconnaissance d'une demande ne porte que sur les messages **du tour en cours** :
+  élargie aux précédents, une tâche nommée deux demandes plus tôt passait pour une
+  consigne actuelle et le bousculage filait sans validation.
+- La mémoire des tâches (`taches-connues.json` dans le dossier de l'app) doit survivre au
+  redémarrage : sans elle, une conversation reprise affiche « une tâche non identifiée »
+  dans les validations et le schéma d'impact ne peut pas se dessiner.
 - Ne pas mettre d'accélérateur `Esc` sur un élément de menu : il capterait la touche avant
   l'interface, qui en a besoin pour refuser une validation.

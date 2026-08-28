@@ -1,4 +1,5 @@
 import { renderMarkdown } from './markdown.js'
+import { renderImpact } from './impact.js'
 
 const api = window.assistant
 const thread = document.getElementById('thread')
@@ -310,6 +311,10 @@ function addPermission(evt) {
   const sub = evt.subtitle || evt.reason
   if (sub) card.appendChild(el('div', 's', sub))
   if (evt.hint) card.appendChild(el('div', 's warn', evt.hint))
+
+  // Un déplacement se comprend mieux dessiné que raconté.
+  const schema = renderImpact(evt.impact)
+  if (schema) card.appendChild(schema)
 
   const lines = evt.summary?.lines || []
   if (lines.length) {

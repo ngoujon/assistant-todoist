@@ -1,10 +1,21 @@
 // Mémoire des objets Todoist croisés pendant la session : elle permet de traduire
 // un id opaque (« a1B2c3D4e5F6g7H8 ») en nom lisible dans les demandes de validation.
 
+const MAX_REMEMBERED = 600
+
 export class TaskRegistry {
-  constructor() {
-    this.tasks = new Map()
-    this.named = new Map() // projets, sections, libellés : id -> nom
+  constructor(snapshot) {
+    this.tasks = new Map(snapshot?.tasks || [])
+    this.named = new Map(snapshot?.named || []) // projets, sections, libellés : id -> nom
+    this.dirty = false
+  }
+
+  /** Sérialisation pour survivre au redémarrage de l'app (conversation reprise). */
+  snapshot() {
+    return {
+      tasks: [...this.tasks].slice(-MAX_REMEMBERED),
+      named: [...this.named].slice(-MAX_REMEMBERED),
+    }
   }
 
   /** Analyse le résultat brut d'un outil Todoist et mémorise ce qu'il contient. */
@@ -16,7 +27,9 @@ export class TaskRegistry {
     } catch {
       return
     }
+    const before = this.tasks.size + this.named.size
     this.#walk(data, 0)
+    if (this.tasks.size + this.named.size !== before) this.dirty = true
   }
 
   task(id) {

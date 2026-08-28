@@ -8,6 +8,7 @@ import { TodoistGuard } from './guards.mjs'
 import { TaskRegistry } from './registry.mjs'
 import { summarizePermission } from './summary.mjs'
 import { wasRequested } from './intent.mjs'
+import { buildImpact } from './impact.mjs'
 
 const HOME = os.homedir()
 const require = createRequire(import.meta.url)
@@ -90,7 +91,7 @@ export class AgentSession {
    * @param {() => object} deps.getConfig               { model, autoTodoist }
    * @param {string} deps.workspace
    */
-  constructor({ emit, askPermission, getConfig, workspace }) {
+  constructor({ emit, askPermission, getConfig, workspace, tasksSnapshot }) {
     this.emit = emit
     this.askPermission = askPermission
     this.getConfig = getConfig
@@ -103,13 +104,23 @@ export class AgentSession {
     this.streamedMessages = new Set()
     this.toolNames = new Map()
     this.guard = new TodoistGuard()
-    this.registry = new TaskRegistry()
+    // La mémoire des tâches survit aux redémarrages : sans elle, une conversation
+    // reprise afficherait « tâche a1B2 » au lieu du nom dans les validations.
+    this.registry = new TaskRegistry(tasksSnapshot)
     this.readyTimer = null
     this.retries = 0
-    /** Derniers messages de l’utilisateur : servent a savoir s'il a demande le changement. */
+    /**
+     * Messages de l’utilisateur *dans le tour en cours* : servent a savoir s'il a demande
+     * le changement. Vides a chaque fin de tour, sinon une tache nommee il y a deux
+     * demandes passerait pour une consigne actuelle.
+     */
     this.recentUserText = []
     /** Une tache a-t-elle ete creee dans le tour courant ? (cas du bousculage) */
     this.createdThisTurn = false
+    /** Familles d'actions deja validees dans le tour : on ne redemande pas. */
+    this.turnGrants = new Set()
+    /** Messages envoyes mais pas encore aboutis : rejoues si la session redemarre. */
+    this.unanswered = []
   }
 
   get running() { return this.q !== null }
@@ -152,7 +163,7 @@ export class AgentSession {
     }
   }
 
-  start({ resume } = {}) {
+  start({ resume, replay } = {}) {
     this.stop()
     this.abort = new AbortController()
     this.queue = createInputQueue()
@@ -161,10 +172,10 @@ export class AgentSession {
     this.resumeNotified = false
     this.streamedMessages = new Set()
     this.guard = new TodoistGuard()
-    this.registry = new TaskRegistry()
     this.q = query({ prompt: this.queue, options: this.buildOptions(resume) })
     this.emit({ k: 'status', state: 'connecting' })
     this.pump()
+    for (const message of replay || []) this.queue.push(message)
   }
 
   /**
@@ -178,7 +189,7 @@ export class AgentSession {
       if (this.retries < 2) {
         this.retries += 1
         this.emit({ k: 'note', text: 'Connexion lente, nouvelle tentative…' })
-        this.start({})
+        this.start({ replay: this.unanswered.slice() })
         return
       }
       this.emit({ k: 'error', message: "L'agent ne répond pas. Ferme et rouvre l'application." })
@@ -197,7 +208,7 @@ export class AgentSession {
       if (this.retries < 2) {
         this.retries += 1
         this.emit({ k: 'note', text: 'Connexion lente, nouvelle tentative…' })
-        this.start({})
+        this.start({ replay: this.unanswered.slice() })
         return
       }
       this.emit({ k: 'error', message: "L'agent ne répond pas. Ferme et rouvre l'application." })
@@ -243,13 +254,16 @@ export class AgentSession {
     this.recentUserText.unshift(text)
     this.recentUserText.length = Math.min(this.recentUserText.length, 3)
     this.createdThisTurn = false
+    this.turnGrants = new Set()
     this.emit({ k: 'turn-start' })
-    this.queue.push({
+    const message = {
       type: 'user',
       message: { role: 'user', content: [{ type: 'text', text }] },
       parent_tool_use_id: null,
       session_id: this.sessionId || '',
-    })
+    }
+    this.unanswered.push(message)
+    this.queue.push(message)
     if (!this.sessionId) this.armReadyWatchdog()
   }
 
@@ -358,7 +372,26 @@ export class AgentSession {
         break
       }
 
+      case 'rate_limit_event': {
+        // Une limite d'usage atteinte se traduit par des reponses qui n'arrivent
+        // jamais : autant le dire plutot que de laisser tourner le rond.
+        const info = msg.rate_limit_info || {}
+        if (info.status === this.lastRateStatus) break
+        this.lastRateStatus = info.status
+        if (info.status === 'rejected') {
+          const at = info.resetsAt ? new Date(info.resetsAt * 1000).toLocaleTimeString('fr-FR', { hour: '2-digit', minute: '2-digit' }) : null
+          this.emit({ k: 'error', message: `Limite d'usage Claude atteinte${at ? ` — ça repart vers ${at}` : ''}.` })
+        } else if (info.status === 'allowed_warning') {
+          const pct = info.utilization != null ? ` (${Math.round(info.utilization * 100)} %)` : ''
+          this.emit({ k: 'note', text: `Tu approches la limite d'usage Claude${pct}.` })
+        }
+        break
+      }
+
       case 'result':
+        this.unanswered = []
+        this.recentUserText = []
+        this.createdThisTurn = false
         this.busy = false
         this.emit({
           k: 'result',
@@ -394,14 +427,21 @@ export class AgentSession {
         createdThisTurn: this.createdThisTurn,
       })
       if (intent.requested) return { behavior: 'allow', updatedInput: input }
+      // Une validation par famille et par tour : valider un premier décalage vaut
+      // pour les suivants du même mouvement.
+      if (this.turnGrants.has(actionFamily(toolName))) {
+        return { behavior: 'allow', updatedInput: input }
+      }
     }
 
     const summary = summarizePermission(toolName, input, this.registry)
+    const impact = buildImpact(toolName, input, this.registry)
 
     const answer = await this.askPermission({
       toolName,
       input,
       summary,
+      impact,
       title: summary?.title || opts?.title,
       displayName: opts?.displayName,
       subtitle: opts?.subtitle,
@@ -412,12 +452,18 @@ export class AgentSession {
     })
 
     if (answer?.behavior === 'allow') {
+      if (touchesExisting) this.turnGrants.add(actionFamily(toolName))
       const res = { behavior: 'allow', updatedInput: input }
       if (answer.always && opts?.suggestions?.length) res.updatedPermissions = opts.suggestions
       return res
     }
     return { behavior: 'deny', message: answer?.message || 'Refuse par l\'utilisateur.' }
   }
+}
+
+/** Supprimer n'est jamais couvert par la validation d'un simple deplacement. */
+function actionFamily(toolName) {
+  return /delete/.test(toolName) ? 'suppression' : 'planification'
 }
 
 function textOf(content) {

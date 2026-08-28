@@ -10,6 +10,12 @@ const STOPWORDS = new Set([
 /** Verbes qui expriment une demande de déplacement / modification / suppression. */
 const ACTION_VERBS = /\b(decale|decaler|deplace|deplacer|bouge|bouger|reporte|reporter|replanifie|replanifier|repousse|repousser|avance|avancer|mets|met|mettre|change|changer|modifie|modifier|renomme|renommer|supprime|supprimer|efface|effacer|annule|annuler|passe|passer|repasse|termine|terminer|coche|archive|archiver|range|ranger|priorise|prioriser)\b/
 
+/**
+ * Désignation d'un ensemble sans le nommer : « décale mes tâches de vendredi »,
+ * « repousse tout ce qui est en retard », « passe les p1 de cet aprem à demain ».
+ */
+const SCOPE = /\b(aujourd hui|demain|apres demain|hier|lundi|mardi|mercredi|jeudi|vendredi|samedi|dimanche|semaine|weekend|week end|mois|matin|midi|apres midi|aprem|soir|soiree|nuit|retard|overdue|tout|toutes|tous|chaque|reste|restantes|p1|p2|p3|p4|inbox|boite de reception)\b/
+
 /** Références sans nom : « décale-la », « mets cette tâche demain ». */
 const PRONOUNS = /\b(la|le|les|l|celle|celui|celles|ceux|ca|cela|cette tache|ce truc|celle ci|celle la)\b/
 
@@ -65,16 +71,31 @@ export function wasRequested({ toolName, input, registry, recentUserText = [], c
   if (!text.trim()) return { requested: false, reason: 'aucune demande récente' }
 
   const names = ids.map((id) => registry?.taskName(id)).filter(Boolean)
-  if (names.length === ids.length && names.every((name) => mentions(text, name))) {
+  const named = names.filter((name) => mentions(text, name))
+  if (names.length === ids.length && named.length === ids.length) {
     return { requested: true, reason: 'tâches nommées par l’utilisateur' }
   }
+  // Il a nommé une tâche précise mais l'outil en touche d'autres : c'est justement
+  // le débordement qu'il veut voir passer devant lui.
+  if (named.length) {
+    return { requested: false, reason: 'l\'action déborde des tâches nommées' }
+  }
 
-  // « décale-la à demain » : une seule tâche visée, un verbe d'action et une reprise
-  // pronominale. On l'exclut si le tour vient de créer une tâche : c'est justement
-  // le cas où l'agent bouscule l'existant pour caser la nouvelle.
   const last = normalize(recentUserText[0] || '')
-  if (ids.length === 1 && !createdThisTurn && ACTION_VERBS.test(last) && PRONOUNS.test(last)) {
-    return { requested: true, reason: 'reprise pronominale explicite' }
+  const asked = ACTION_VERBS.test(last)
+
+  // Les deux formes de demande sans nom de tâche. On les refuse quand le tour vient
+  // de créer une tâche : c'est le moment où l'agent bouscule l'existant pour caser
+  // la nouvelle, et c'est précisément ce qui doit se valider.
+  if (asked && !createdThisTurn) {
+    // « décale-la à demain »
+    if (ids.length === 1 && PRONOUNS.test(last)) {
+      return { requested: true, reason: 'reprise pronominale explicite' }
+    }
+    // « décale mes tâches de vendredi à lundi », « repousse tout ce qui est en retard »
+    if (SCOPE.test(last)) {
+      return { requested: true, reason: 'ensemble désigné par l’utilisateur' }
+    }
   }
 
   return { requested: false, reason: 'cible non nommée par l’utilisateur' }

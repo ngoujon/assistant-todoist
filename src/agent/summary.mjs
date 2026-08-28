@@ -27,7 +27,7 @@ const plural = (n, one, many) => (n > 1 ? `${n} ${many}` : one)
  *   null = pas de résumé spécifique, l'interface retombe sur le détail brut.
  */
 export function summarizePermission(toolName, input, registry) {
-  const named = (id) => registry?.taskName(id) || `tâche ${String(id).slice(-4)}`
+  const named = (id) => registry?.taskName(id) || 'une tâche non identifiée'
 
   switch (toolName) {
     case 'mcp__todoist__reschedule-tasks': {
