@@ -64,6 +64,19 @@ Au clavier, quand une carte attend : **`↩` autorise**, **`esc` refuse**. `↩`
 si le champ de saisie est vide — sinon la phrase en cours part comme message, elle ne
 valide rien par accident.
 
+## Écrire pendant qu'il travaille
+
+Le champ de saisie n'est jamais bloqué. Un message envoyé pendant un traitement est
+**fondu dans le tour en cours** par le CLI : l'agent le lit en route, relance les outils
+qu'il faut et répond aux deux demandes d'un coup (vérifié : « compte mes projets » puis,
+5 s plus tard, « et aussi les libellés » → une seule réponse couvrant les deux). La bulle
+porte alors la mention *ajouté au traitement en cours*.
+
+Le bouton reste **envoyer** tant qu'il y a du texte ; il ne devient **arrêter** que si le
+champ est vide (sinon `esc` ou `⌘.`). Écrire alors qu'une carte de validation attend vaut
+refus de cette carte — sinon le message resterait sans effet, l'agent étant bloqué sur son
+outil.
+
 ## Ce qu'il fait sans demander
 
 - **Sans confirmation** : toute lecture (Todoist, fichiers, web) et — par défaut — la
@@ -129,5 +142,12 @@ sur Apple Silicon : `scripts/build-app.sh` s'en charge.
   existant installait silencieusement une version périmée.
 - Un changement de règles métier doit s'accompagner d'un `PROMPT_VERSION` incrémenté,
   sinon la conversation reprise garde l'ancien comportement par mimétisme.
+- Le CLI n'émet `system/init` qu'après avoir reçu un premier message : l'en-tête affiche
+  donc « Prêt », puis « Todoist connecté » dès la première question. **Ne pas** tenter de
+  forcer l'init avec un message `shouldQuery: false` : il fusionne avec le suivant et
+  **avale le premier vrai message** (reproduit puis retiré).
+- L'occupation de l'agent ne peut pas se compter en envois : deux messages peuvent être
+  fondus dans un seul tour, donc un seul `result`. Elle suit son activité réelle.
+- `init` peut arriver plusieurs fois dans une session — dédupliquer les notes qui en dépendent.
 - Ne pas mettre d'accélérateur `Esc` sur un élément de menu : il capterait la touche avant
   l'interface, qui en a besoin pour refuser une validation.

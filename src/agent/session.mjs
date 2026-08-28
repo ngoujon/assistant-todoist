@@ -103,6 +103,8 @@ export class AgentSession {
     this.toolNames = new Map()
     this.guard = new TodoistGuard()
     this.registry = new TaskRegistry()
+    this.readyTimer = null
+    this.retries = 0
   }
 
   get running() { return this.q !== null }
@@ -151,12 +153,51 @@ export class AgentSession {
     this.queue = createInputQueue()
     this.sessionId = null
     this.resumeId = resume || null
+    this.resumeNotified = false
     this.streamedMessages = new Set()
     this.guard = new TodoistGuard()
     this.registry = new TaskRegistry()
     this.q = query({ prompt: this.queue, options: this.buildOptions(resume) })
     this.emit({ k: 'status', state: 'connecting' })
     this.pump()
+  }
+
+  /**
+   * Le CLI n'initialise la session qu'au premier message : on ne surveille donc qu'a
+   * partir de la, et on relance une fois si rien ne revient.
+   */
+  armReadyWatchdog() {
+    clearTimeout(this.readyTimer)
+    this.readyTimer = setTimeout(() => {
+      if (this.sessionId) return
+      if (this.retries < 2) {
+        this.retries += 1
+        this.emit({ k: 'note', text: 'Connexion lente, nouvelle tentative…' })
+        this.start({})
+        return
+      }
+      this.emit({ k: 'error', message: "L'agent ne répond pas. Ferme et rouvre l'application." })
+      this.emit({ k: 'status', state: 'idle' })
+    }, 40000)
+  }
+
+  /**
+   * Le CLI n'initialise la session qu'au premier message : on ne surveille donc qu'a
+   * partir de la, et on relance une fois si rien ne revient.
+   */
+  armReadyWatchdog() {
+    clearTimeout(this.readyTimer)
+    this.readyTimer = setTimeout(() => {
+      if (this.sessionId) return
+      if (this.retries < 2) {
+        this.retries += 1
+        this.emit({ k: 'note', text: 'Connexion lente, nouvelle tentative…' })
+        this.start({})
+        return
+      }
+      this.emit({ k: 'error', message: "L'agent ne répond pas. Ferme et rouvre l'application." })
+      this.emit({ k: 'status', state: 'idle' })
+    }, 40000)
   }
 
   async pump() {
@@ -183,6 +224,7 @@ export class AgentSession {
   }
 
   stop() {
+    clearTimeout(this.readyTimer)
     try { this.queue?.close() } catch {}
     try { this.abort?.abort() } catch {}
     this.q = null
@@ -192,15 +234,25 @@ export class AgentSession {
 
   send(text) {
     if (!this.q) this.start({})
-    this.busy = true
+    this.markBusy()
     this.emit({ k: 'turn-start' })
-    this.emit({ k: 'status', state: 'thinking' })
     this.queue.push({
       type: 'user',
       message: { role: 'user', content: [{ type: 'text', text }] },
       parent_tool_use_id: null,
       session_id: this.sessionId || '',
     })
+    if (!this.sessionId) this.armReadyWatchdog()
+  }
+
+  /**
+   * Un message envoyé pendant un tour est fondu dans ce tour par le CLI : on ne peut
+   * donc pas compter les envois pour savoir si l'agent travaille. On suit son activité.
+   */
+  markBusy() {
+    if (this.busy) return
+    this.busy = true
+    this.emit({ k: 'status', state: 'thinking' })
   }
 
   async interrupt() {
@@ -218,9 +270,14 @@ export class AgentSession {
   // ---------------------------------------------------------------- routage
 
   route(msg) {
+    if (process.env.ASSISTANT_DEBUG) {
+      console.log('[agent]', msg.type, msg.subtype || msg.event?.type || '')
+    }
     switch (msg.type) {
       case 'system':
         if (msg.subtype === 'init') {
+          clearTimeout(this.readyTimer)
+          this.retries = 0
           this.sessionId = msg.session_id
           const todoist = (msg.mcp_servers || []).find((s) => s.name === 'todoist')
           this.emit({
@@ -229,7 +286,11 @@ export class AgentSession {
             model: msg.model,
             todoist: todoist?.status || 'absent',
           })
-          if (this.resumeId) this.emit({ k: 'resumed' })
+          // Le CLI peut emettre plusieurs `init` par session : la note ne doit sortir qu'une fois.
+          if (this.resumeId && !this.resumeNotified) {
+            this.resumeNotified = true
+            this.emit({ k: 'resumed' })
+          }
           this.emit({ k: 'status', state: this.busy ? 'thinking' : 'idle' })
         } else if (msg.subtype === 'compact_boundary') {
           this.emit({ k: 'note', text: 'Conversation resumee pour liberer de la memoire.' })
@@ -237,6 +298,7 @@ export class AgentSession {
         break
 
       case 'stream_event': {
+        this.markBusy()
         const ev = msg.event
         if (ev.type === 'message_start' && ev.message?.id) this.streamedMessages.add(ev.message.id)
         if (ev.type === 'content_block_start') {
@@ -252,6 +314,7 @@ export class AgentSession {
       }
 
       case 'assistant': {
+        this.markBusy()
         const id = msg.message?.id
         const alreadyStreamed = id && this.streamedMessages.has(id)
         for (const block of msg.message?.content || []) {

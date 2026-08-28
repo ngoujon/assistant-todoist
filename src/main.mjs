@@ -87,6 +87,11 @@ function createWindow() {
   })
 
   win.webContents.on('did-start-loading', () => { rendererReady = false })
+  if (process.env.ASSISTANT_DEBUG) {
+    win.webContents.on('console-message', (d) => {
+      console.log('[renderer]', d.level, d.message, `${d.sourceId || ''}:${d.lineNumber || ''}`)
+    })
+  }
   win.loadFile(path.join(__dirname, 'renderer', 'index.html'))
   win.once('ready-to-show', () => win.show())
 
@@ -113,6 +118,7 @@ let rendererReady = false
 const pendingEvents = []
 
 function emit(evt) {
+  if (process.env.ASSISTANT_DEBUG) console.log('[emit]', evt.k, rendererReady ? 'direct' : 'en attente')
   if (!rendererReady) {
     pendingEvents.push(evt)
     if (pendingEvents.length > 200) pendingEvents.shift()
@@ -122,6 +128,7 @@ function emit(evt) {
 }
 
 function flushEvents() {
+  if (process.env.ASSISTANT_DEBUG) console.log('[emit] flush de', pendingEvents.length, 'evenement(s)')
   rendererReady = true
   const queued = pendingEvents.splice(0, pendingEvents.length)
   for (const evt of queued) {

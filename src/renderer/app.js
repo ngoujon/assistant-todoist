@@ -185,10 +185,22 @@ function humanizeInput(value, depth = 0, lines = []) {
 
 // ------------------------------------------------------------------- rendu
 
-function pushUserMessage(text) {
+function pushUserMessage(text, queued) {
   dropWelcome()
-  add(el('div', 'msg user', text))
+  finishText()
+  finishThinking()
+  const bubble = el('div', `msg user${queued ? ' queued' : ''}`, text)
+  if (queued) bubble.appendChild(el('span', 'badge', 'ajouté au traitement en cours'))
+  add(bubble)
   scrollDown(true)
+}
+
+/** Le tour est terminé : plus rien n'est « en file ». */
+function clearQueuedBadges() {
+  for (const node of thread.querySelectorAll('.msg.user.queued')) {
+    node.classList.remove('queued')
+    node.querySelector('.badge')?.remove()
+  }
 }
 
 function startTextBlock() {
@@ -344,7 +356,7 @@ function addPermission(evt) {
     input.focus()
   }
   entry.allow = () => answer({ behavior: 'allow' })
-  entry.deny = () => answer({ behavior: 'deny', message: 'Refusé par l’utilisateur.' })
+  entry.deny = (message) => answer({ behavior: 'deny', message: message || 'Refusé par l’utilisateur.' })
   entry.card = card
   pendingPerms.push(entry)
 
@@ -382,7 +394,18 @@ function refreshActivePerm() {
 function setBusy(v) {
   busy = v
   document.body.classList.toggle('busy', v)
-  sendBtn.disabled = !v && !input.value.trim()
+  refreshComposer()
+}
+
+/**
+ * Le bouton reste « envoyer » dès qu'il y a du texte, même pendant un traitement :
+ * il ne devient « arrêter » que si le champ est vide.
+ */
+function refreshComposer() {
+  const hasText = Boolean(input.value.trim())
+  document.body.classList.toggle('has-text', hasText)
+  sendBtn.disabled = !hasText && !busy
+  sendBtn.setAttribute('aria-label', !hasText && busy ? 'Arrêter' : 'Envoyer')
 }
 
 function setStatus(text, kind) {
@@ -393,8 +416,20 @@ function setStatus(text, kind) {
 
 function submit(forced) {
   const text = (forced ?? input.value).trim()
-  if (!text || busy) return
-  pushUserMessage(text)
+  if (!text) return
+
+  // Une demande de validation encore ouverte bloquerait l'agent sur son outil :
+  // écrire autre chose vaut refus, sinon le message resterait sans effet.
+  const pending = pendingPerms[0]
+  if (pending) {
+    pending.deny(`L’utilisateur a répondu autre chose : « ${text} »`)
+    addNote('Demande refusée : tu as répondu autre chose.')
+  }
+
+  // Envoi possible même pendant un traitement : le CLI fond le message dans le
+  // tour en cours, l'agent le prend en compte et recalcule sa réponse.
+  const queued = busy
+  pushUserMessage(text, queued)
   api.send(text)
   input.value = ''
   autoGrow()
@@ -408,7 +443,7 @@ function autoGrow() {
 
 input.addEventListener('input', () => {
   autoGrow()
-  sendBtn.disabled = busy ? false : !input.value.trim()
+  refreshComposer()
 })
 
 input.addEventListener('keydown', (e) => {
@@ -444,7 +479,7 @@ document.addEventListener('keydown', (e) => {
 }, true)
 
 sendBtn.addEventListener('click', () => {
-  if (busy) api.interrupt()
+  if (busy && !input.value.trim()) api.interrupt()
   else submit()
 })
 
@@ -482,7 +517,9 @@ api.onEvent((evt) => {
       )
       break
     case 'status':
-      if (evt.state === 'connecting') setStatus('Connexion…', 'pending')
+      // La session ne s'initialise qu'au premier message : on annonce « Prêt »,
+      // et l'état Todoist s'affiche dès qu'il est réellement connu.
+      if (evt.state === 'connecting') setStatus('Prêt', '')
       else if (evt.state === 'thinking') setBusy(true)
       else setBusy(false)
       break
@@ -513,12 +550,14 @@ api.onEvent((evt) => {
     case 'result':
       finishText()
       finishThinking()
+      clearQueuedBadges()
       if (evt.isError && evt.text) addNote(evt.text, 'err')
       setBusy(false)
       break
     case 'interrupted':
       finishText()
       finishThinking()
+      clearQueuedBadges()
       addNote('Interrompu.')
       setBusy(false)
       break

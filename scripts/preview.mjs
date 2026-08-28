@@ -91,5 +91,33 @@ app.whenReady().then(async () => {
   )
   console.log(`clavier esc : ${answeredBefore} -> ${answeredAfter} carte(s) repondue(s), verdict « ${verdict} »`)
 
+  // Verification : le composeur reste utilisable pendant un traitement.
+  await win.webContents.executeJavaScript(`(() => {
+    window.assistant._fire({ k: 'status', state: 'thinking' })
+    const box = document.getElementById('input')
+    box.value = 'et ajoute aussi le tâche R'
+    box.dispatchEvent(new Event('input'))
+    document.getElementById('btn-send').click()
+  })()`)
+  await new Promise((r) => setTimeout(r, 200))
+  const queued = await win.webContents.executeJavaScript("document.querySelectorAll('.msg.user.queued').length")
+  const stillBusy = await win.webContents.executeJavaScript("document.body.classList.contains('busy')")
+  const emptyAgain = await win.webContents.executeJavaScript("!document.getElementById('input').value")
+  console.log(`envoi pendant traitement : ${queued} bulle(s) en file, busy=${stillBusy}, champ vide=${emptyAgain}`)
+
+  // Le bouton doit rester « envoyer » tant qu'il y a du texte, « arreter » sinon.
+  const stopWhenEmpty = await win.webContents.executeJavaScript(
+    "getComputedStyle(document.querySelector('.send .ic-stop')).display",
+  )
+  await win.webContents.executeJavaScript(`(() => {
+    const box = document.getElementById('input')
+    box.value = 'texte en cours'
+    box.dispatchEvent(new Event('input'))
+  })()`)
+  const stopWhenTyping = await win.webContents.executeJavaScript(
+    "getComputedStyle(document.querySelector('.send .ic-stop')).display",
+  )
+  console.log(`bouton stop : champ vide = ${stopWhenEmpty}, en train d'ecrire = ${stopWhenTyping}`)
+
   app.quit()
 })

@@ -14,15 +14,21 @@ function emphasis(text) {
     .replace(/~~([^~]+)~~/g, '<del>$1</del>')
 }
 
-// Découpe sur les backticks : les segments impairs sont du code inline.
+// Le code inline est mis de côté derrière un jeton avant d'appliquer le gras et
+// l'italique : sinon un `**gras contenant du `code`**` casse la mise en forme.
+const OPEN = '\uE000'
+const CLOSE = '\uE001'
+
 function inline(text) {
-  const parts = String(text).split('`')
-  let out = ''
-  for (let i = 0; i < parts.length; i++) {
-    if (i % 2 === 1 && i < parts.length - 1) out += `<code>${escapeHtml(parts[i])}</code>`
-    else out += emphasis(i % 2 === 1 ? `\`${parts[i]}` : parts[i])
-  }
-  return out
+  const codes = []
+  const masked = String(text).replace(/`([^`\n]+)`/g, (_m, code) => {
+    codes.push(code)
+    return `${OPEN}${codes.length - 1}${CLOSE}`
+  })
+  return emphasis(masked).replace(
+    new RegExp(`${OPEN}(\\d+)${CLOSE}`, 'g'),
+    (_m, i) => `<code>${escapeHtml(codes[Number(i)])}</code>`,
+  )
 }
 
 export function renderMarkdown(src) {

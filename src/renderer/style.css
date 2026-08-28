@@ -196,6 +196,14 @@ main::-webkit-scrollbar-track { background: transparent; }
   box-shadow: 0 2px 8px rgba(228, 67, 50, 0.24);
 }
 
+.msg.user.queued { opacity: 0.9; }
+.msg.user .badge {
+  display: block;
+  margin-top: 3px;
+  font-size: 10.5px;
+  opacity: 0.85;
+}
+
 .msg.assistant { user-select: text; word-break: break-word; }
 
 /* --------------------------------------------------------------- markdown */
@@ -478,8 +486,9 @@ footer { flex: 0 0 auto; padding: 6px 14px 12px; }
 .send:disabled { opacity: 0.32; }
 .send:not(:disabled):active { transform: scale(0.9); }
 .send .ic-stop { display: none; }
-body.busy .send .ic-send { display: none; }
-body.busy .send .ic-stop { display: block; }
+/* « arrêter » seulement quand il n'y a rien à envoyer : on peut écrire pendant un traitement */
+body.busy:not(.has-text) .send .ic-send { display: none; }
+body.busy:not(.has-text) .send .ic-stop { display: block; }
 body.busy .send { opacity: 1; }
 
 .hint { text-align: center; font-size: 10.5px; color: var(--text-faint); padding-top: 6px; }
