@@ -22,23 +22,53 @@ function movesOrRemoves(toolName, input) {
     return Boolean(registry.task(task.id)?.due)
   })
 }
+function wipesContainer(toolName, input) {
+  return toolName === 'mcp__todoist__delete-object' && Boolean(input?.type) && input.type !== 'task'
+}
+/** `auto` = mode autonome (reglage par defaut). */
+function needsCard(toolName, input, auto) {
+  return auto ? wipesContainer(toolName, input) : movesOrRemoves(toolName, input)
+}
 
-const cases = [
-  ['changer un libellé', 'mcp__todoist__update-tasks', { tasks: [{ id: 'A', labels: ['libellé-1', 'libellé-4'] }] }, false],
+// Mode autonome : tout part seul, sauf ce qui efface un conteneur entier.
+const autoCases = [
+  ['changer un libellé', 'mcp__todoist__update-tasks', { tasks: [{ id: 'A', labels: ['libellé-1'] }] }, false],
+  ['dater une tâche sans date', 'mcp__todoist__update-tasks', { tasks: [{ id: 'A', dueString: 'demain 10h30' }] }, false],
+  ['réécrire une date existante', 'mcp__todoist__update-tasks', { tasks: [{ id: 'R', dueString: 'jeudi' }] }, false],
+  ['changer de projet', 'mcp__todoist__update-tasks', { tasks: [{ id: 'A', projectId: '77' }] }, false],
+  ['décaler', 'mcp__todoist__reschedule-tasks', { tasks: [{ id: 'R', date: '2026-09-08' }] }, false],
+  ['bousculer pour caser', 'mcp__todoist__reschedule-tasks', { tasks: [{ id: 'A', date: '2026-09-09' }] }, false],
+  ['réorganiser en masse', 'mcp__todoist__reorder-objects', { type: 'task', items: [] }, false],
+  ['supprimer une tâche', 'mcp__todoist__delete-object', { type: 'task', id: 'A' }, false],
+  ['supprimer un projet', 'mcp__todoist__delete-object', { type: 'project', id: 'P' }, true],
+  ['supprimer une section', 'mcp__todoist__delete-object', { type: 'section', id: 'S' }, true],
+  ['supprimer un libellé', 'mcp__todoist__delete-object', { type: 'label', id: 'L' }, true],
+]
+
+// Mode autonome décoché : on revient à « ce qui déplace ou supprime se valide ».
+const manualCases = [
+  ['changer un libellé', 'mcp__todoist__update-tasks', { tasks: [{ id: 'A', labels: ['libellé-1'] }] }, false],
   ['changer la priorité', 'mcp__todoist__update-tasks', { tasks: [{ id: 'A', priority: 'p2' }] }, false],
   ['régler la durée', 'mcp__todoist__update-tasks', { tasks: [{ id: 'A', duration: '15m' }] }, false],
   ['dater une tâche sans date', 'mcp__todoist__update-tasks', { tasks: [{ id: 'A', dueString: 'demain 10h30' }] }, false],
   ['réécrire une date existante', 'mcp__todoist__update-tasks', { tasks: [{ id: 'R', dueString: 'jeudi' }] }, true],
   ['changer de projet', 'mcp__todoist__update-tasks', { tasks: [{ id: 'A', projectId: '77' }] }, true],
   ['décaler', 'mcp__todoist__reschedule-tasks', { tasks: [{ id: 'R', date: '2026-09-08' }] }, true],
-  ['supprimer', 'mcp__todoist__delete-object', { type: 'task', id: 'A' }, true],
+  ['supprimer une tâche', 'mcp__todoist__delete-object', { type: 'task', id: 'A' }, true],
 ]
 
 let ko = 0
-for (const [label, tool, input, expected] of cases) {
-  const got = movesOrRemoves(tool, input)
-  if (got !== expected) ko++
-  console.log(`${got === expected ? 'ok  ' : 'ECHEC'} ${label.padEnd(28)} -> ${got ? 'carte' : 'passe seul'}`)
+for (const [title, cases, auto] of [
+  ['--- mode autonome (par défaut) ---', autoCases, true],
+  ['--- mode autonome décoché ---', manualCases, false],
+]) {
+  console.log(title)
+  for (const [label, tool, input, expected] of cases) {
+    const got = needsCard(tool, input, auto)
+    if (got !== expected) ko++
+    console.log(`${got === expected ? 'ok  ' : 'ECHEC'} ${label.padEnd(28)} -> ${got ? 'carte' : 'passe seul'}`)
+  }
+  console.log('')
 }
 
 console.log('\n--- garde-fou update-tasks ---')

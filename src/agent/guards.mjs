@@ -1,13 +1,14 @@
-// Garde-fous deterministes : le prompt seul ne suffit pas a garantir que l'agent
-// demande avant de creer. Ces hooks PreToolUse refusent l'appel d'outil tant que
-// l'information manque, et expliquent au modele quoi demander.
+// Garde-fous deterministes : le prompt seul ne suffit pas a garantir qu'une tache
+// creee soit complete. Ces hooks PreToolUse refusent l'appel d'outil tant qu'il
+// manque une metadonnee — mais l'agent se debrouille seul pour la combler : il ne
+// remonte jamais la question a l’utilisateur.
 
 const OBSOLETE_LABEL = /^ancien-/i
 const TYPO_LABELS = new Set(['coquille'])
 
-const ASK_INSTRUCTIONS =
-  'Pose la question à l’utilisateur dans un seul message, en liste numérotée, avec ta suggestion par défaut ' +
-  'pour chaque point, puis attends sa réponse. Ne rappelle pas cet outil avant qu\'il ait répondu.'
+const DECIDE_INSTRUCTIONS =
+  'Ne pose aucune question à l’utilisateur : choisis toi-même la valeur la plus raisonnable, ' +
+  'rappelle l\'outil immédiatement avec le champ rempli, et annonce ton choix en gras dans ton résumé.'
 
 /** Formulations qui assument une tâche sans échéance. */
 const NO_DATE_WANTED = /\b(sans date|pas de date|sans echeance|sans échéance|pas d.echeance|pas d.échéance|backlog|un jour|plus tard|quand j.aurai|reservoir|réservoir)\b/i
@@ -70,7 +71,8 @@ export class TodoistGuard {
 
     if (this.knownLabels === null) {
       return 'Création bloquée : tu n\'as pas encore lu les libellés du compte. ' +
-        'Appelle d\'abord `mcp__todoist__find-labels`, puis applique un libellé existant à chaque tâche.'
+        'Appelle d\'abord `mcp__todoist__find-labels`, puis applique un libellé existant à chaque tâche. ' +
+        'Enchaîne tout seul, sans en parler à l’utilisateur.'
     }
 
     const problems = []
@@ -83,7 +85,7 @@ export class TodoistGuard {
       // Une tâche de réservoir (p4, ou demandée « sans date ») n'a pas à être datée.
       const datelessOk = task?.priority === 'p4' || NO_DATE_WANTED.test(this.getUserText())
       if (!task?.dueString && !task?.deadlineDate && !datelessOk) {
-        missing.push('le jour / l\'heure (et s\'il faut une récurrence)')
+        missing.push('le jour / l\'heure')
       }
 
       const labels = Array.isArray(task?.labels) ? task.labels.filter(Boolean).map(String) : []
@@ -99,7 +101,7 @@ export class TodoistGuard {
         if (trulyUnknown.length) {
           problems.push(
             `« ${name} » : le libellé ${trulyUnknown.map((l) => `@${l}`).join(', ')} n'existe pas dans le compte. ` +
-            'Utilise un libellé existant, ou demande à l’utilisateur s\'il veut en créer un.',
+            'Reprends le libellé existant le plus proche.',
           )
         }
       }
@@ -108,7 +110,7 @@ export class TodoistGuard {
     }
 
     if (!problems.length) return null
-    return `Création bloquée.\n${problems.join('\n')}\n${ASK_INSTRUCTIONS}`
+    return `Création bloquée.\n${problems.join('\n')}\n${DECIDE_INSTRUCTIONS}`
   }
 
   /**

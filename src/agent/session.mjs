@@ -7,7 +7,6 @@ import { buildSystemPrompt } from './prompt.mjs'
 import { TodoistGuard } from './guards.mjs'
 import { TaskRegistry } from './registry.mjs'
 import { summarizePermission } from './summary.mjs'
-import { wasRequested } from './intent.mjs'
 import { buildImpact } from './impact.mjs'
 
 const HOME = os.homedir()
@@ -65,8 +64,6 @@ function movesOrRemoves(toolName, input, registry) {
     return Boolean(registry?.task(task.id)?.due)
   })
 }
-/** Tout outil Todoist. */
-const TODOIST_ANY = /^mcp__todoist__/
 /** Outils internes sans effet de bord. */
 const SAFE_BUILTIN = new Set([
   'Read', 'Glob', 'Grep', 'WebSearch', 'WebFetch', 'TodoWrite', 'Task',
@@ -131,10 +128,6 @@ export class AgentSession {
      * demandes passerait pour une consigne actuelle.
      */
     this.recentUserText = []
-    /** Une tache a-t-elle ete creee dans le tour courant ? (cas du bousculage) */
-    this.createdThisTurn = false
-    /** Familles d'actions deja validees dans le tour : on ne redemande pas. */
-    this.turnGrants = new Set()
     /** Messages envoyes mais pas encore aboutis : rejoues si la session redemarre. */
     this.unanswered = []
   }
@@ -269,8 +262,6 @@ export class AgentSession {
     this.markBusy()
     this.recentUserText.unshift(text)
     this.recentUserText.length = Math.min(this.recentUserText.length, 3)
-    this.createdThisTurn = false
-    this.turnGrants = new Set()
     this.emit({ k: 'turn-start' })
     const message = {
       type: 'user',
@@ -357,7 +348,6 @@ export class AgentSession {
         const alreadyStreamed = id && this.streamedMessages.has(id)
         for (const block of msg.message?.content || []) {
           if (block.type === 'tool_use') {
-            if (block.name === 'mcp__todoist__add-tasks') this.createdThisTurn = true
             this.toolNames.set(block.id, block.name)
             this.emit({ k: 'tool-use', id: block.id, name: block.name, input: block.input })
           } else if (block.type === 'text' && !alreadyStreamed && block.text?.trim()) {
@@ -407,7 +397,6 @@ export class AgentSession {
       case 'result':
         this.unanswered = []
         this.recentUserText = []
-        this.createdThisTurn = false
         this.busy = false
         this.emit({
           k: 'result',
@@ -427,27 +416,14 @@ export class AgentSession {
     const cfg = this.getConfig()
     const touchesExisting = movesOrRemoves(toolName, input, this.registry)
 
-    if (!touchesExisting) {
+    // Mode autonome : l'agent execute et improvise, l’utilisateur corrige apres coup d'un
+    // mot. Seule exception, un conteneur supprime emporte tout ce qu'il contient et
+    // ne se rattrape pas : celui-la seul ouvre encore une carte.
+    if (cfg.autoTodoist) {
+      if (!wipesContainer(toolName, input)) return { behavior: 'allow', updatedInput: input }
+    } else if (!touchesExisting) {
       if (SAFE_BUILTIN.has(toolName)) return { behavior: 'allow', updatedInput: input }
       if (TODOIST_READONLY.test(toolName)) return { behavior: 'allow', updatedInput: input }
-      if (cfg.autoTodoist && TODOIST_ANY.test(toolName)) return { behavior: 'allow', updatedInput: input }
-    } else if (cfg.autoTodoist) {
-      // Valider ce que l’utilisateur vient de demander n'apporte rien : la carte ne sert
-      // qu'aux changements qu'il n'a pas demandes — typiquement une tache bousculee
-      // pour en caser une autre.
-      const intent = wasRequested({
-        toolName,
-        input,
-        registry: this.registry,
-        recentUserText: this.recentUserText,
-        createdThisTurn: this.createdThisTurn,
-      })
-      if (intent.requested) return { behavior: 'allow', updatedInput: input }
-      // Une validation par famille et par tour : valider un premier décalage vaut
-      // pour les suivants du même mouvement.
-      if (this.turnGrants.has(actionFamily(toolName))) {
-        return { behavior: 'allow', updatedInput: input }
-      }
     }
 
     const summary = summarizePermission(toolName, input, this.registry)
@@ -462,13 +438,14 @@ export class AgentSession {
       displayName: opts?.displayName,
       subtitle: opts?.subtitle,
       reason: opts?.decisionReason,
-      hint: touchesExisting ? 'Cette action déplace ou supprime des tâches existantes.' : undefined,
+      hint: wipesContainer(toolName, input)
+        ? 'Cette suppression emporte tout ce que le conteneur contient.'
+        : touchesExisting ? 'Cette action déplace ou supprime des tâches existantes.' : undefined,
       allowAlways: !touchesExisting,
       signal: opts?.signal,
     })
 
     if (answer?.behavior === 'allow') {
-      if (touchesExisting) this.turnGrants.add(actionFamily(toolName))
       const res = { behavior: 'allow', updatedInput: input }
       if (answer.always && opts?.suggestions?.length) res.updatedPermissions = opts.suggestions
       return res
@@ -477,9 +454,9 @@ export class AgentSession {
   }
 }
 
-/** Supprimer n'est jamais couvert par la validation d'un simple deplacement. */
-function actionFamily(toolName) {
-  return /delete/.test(toolName) ? 'suppression' : 'planification'
+/** Supprimer un projet, une section ou un libellé emporte tout ce qu'il contient. */
+function wipesContainer(toolName, input) {
+  return toolName === 'mcp__todoist__delete-object' && Boolean(input?.type) && input.type !== 'task'
 }
 
 function textOf(content) {

@@ -30,47 +30,42 @@ L'assistant suit deux règles fortes, décrites dans `src/agent/prompt.mjs` **et
 techniquement dans `src/agent/guards.mjs` (le prompt seul ne suffisait pas : le modèle
 créait quand même la tâche en devinant).
 
-**Règle n°1 — dans le doute, il demande.** Il ne devine jamais la *priorité*, la *durée*,
-le *jour* ni la *récurrence*. Il pose toutes ses questions dans un seul message numéroté,
-avec sa suggestion par défaut, puis attend. Un hook `PreToolUse` **refuse** `add-tasks`
-tant qu'il manque l'un de ces champs — ou tant que les libellés du compte n'ont pas été lus.
+**Règle n°1 — il tranche, il ne demande pas.** Priorité, durée, jour, heure, récurrence,
+libellé : quand l'information manque, il choisit la valeur la plus raisonnable, l'applique
+et **annonce son choix en gras** dans son résumé — tu corriges d'un mot si ça ne va pas.
+Il ne pose une question que s'il est vraiment bloqué : cible ambiguë (« décale le
+rendez-vous » alors qu'il y en a trois), ou fait qu'il ne peut pas inventer (une adresse,
+un montant). Un hook `PreToolUse` **refuse** `add-tasks` tant qu'un de ces champs manque —
+ou tant que les libellés du compte n'ont pas été lus — mais il demande à l'agent de
+**combler lui-même** le trou, jamais de remonter la question.
 
-**Il a la main sur les métadonnées.** Libellé faux, priorité incohérente, durée absurde,
-titre bancal : il corrige et il le signale — sans demander, c'est réversible d'un mot.
+**Règle n°2 — il a la main, y compris sur ce qu'il bouscule.** Libellé faux, priorité
+incohérente, durée absurde, titre bancal, tâche à décaler pour caser la nouvelle : il
+corrige, il déplace, et il le signale dans son résumé. Créneau plein ? Il ne s'arrête pas
+pour demander quoi faire : il prend la meilleure décision, dit ce qui était là et ce que
+son choix a coûté, et propose l'alternative en une ligne.
 
-**Règle n°2 — ce qu'il bouscule se valide.** Ce que tu demandes, il le fait : tu n'as pas
-à revalider ta propre consigne (« décale Tâche A à lundi 9h30 » → il décale, il confirme).
-Ne déclenchent une carte que les actions qui **déplacent ou suppriment** : `reschedule`,
-`delete`, un changement de projet ou de section, la réécriture d'une date existante. Un
-`update-tasks` qui ne touche qu'aux libellés, à la priorité, à la durée ou au titre passe
-seul — et dater une tâche qui n'avait pas de date revient à la créer, donc pas de carte
-non plus. Parmi celles-là, la carte ne sort que pour ce que tu **n'as pas** demandé : la tâche déplacée
-d'autorité pour en caser une autre, la priorité changée au passage, le ménage proposé.
-Il expose alors le conflit, propose les options (*en parallèle ?* / *je décale telle tâche
-à tel jour ?*) et attend le feu vert.
+**Une seule carte de validation subsiste** : supprimer un projet, une section ou un
+libellé entier, parce que ça emporte tout ce qu'il contient et que ça ne se rattrape pas.
+Tout le reste part directement.
 
-La validation est aussi **ponctuelle** : accepter un premier déplacement vaut pour tous
-ceux du même tour (les suppressions gardent leur propre validation). Et une demande qui
-désigne un ensemble — « décale mes tâches de vendredi à lundi », « repousse tout ce qui
-est en retard » — passe sans carte, comme une demande nommée.
-
-`src/agent/intent.mjs` fait ce tri : il compare les tâches visées par l'outil aux noms que
-tu viens d'employer (accents et casse ignorés, un mot distinctif suffit), gère la reprise
-pronominale (« décale-la à demain ») et la désactive quand le tour vient de créer une
-tâche — précisément le cas où l'agent bouscule l'existant pour caser la nouvelle. Restent
-toujours confirmées : la suppression d'un projet, d'une section ou d'un libellé, et les
-réorganisations en masse. `node scripts/intent-test.mjs` couvre ces cas.
+Décocher **Mode autonome** dans les réglages ⚙ ramène l'ancien comportement : toute action
+qui **déplace ou supprime** (`reschedule`, `delete`, changement de projet ou de section,
+réécriture d'une date existante) ouvre une carte. Un `update-tasks` qui ne touche qu'aux
+libellés, à la priorité, à la durée ou au titre passe seul dans les deux modes — et dater
+une tâche qui n'avait pas de date revient à la créer, donc pas de carte non plus.
+`node scripts/permission-test.mjs` couvre les deux modes.
 
 Autres garanties :
 
 - **Priorités** : `p1` urgent · `p2` important · `p3` à faire · `p4` un jour. Todoist n'a
   que ces quatre niveaux (pas de `p0`, le maximum est `p1`).
 - **Libellés** : il appelle `find-labels`, n'applique que des libellés **existants**, ignore
-  les `ancien-*` et la coquille `coquille`, et ne crée jamais un libellé sans accord. Le hook
-  rejette tout libellé inconnu.
-- **Récurrence** : appliquée en langage naturel si elle est précisée, demandée si elle est
-  ambiguë. Le hook refuse `update-tasks` avec une date **sur une tâche récurrente** (ça
-  écraserait la récurrence) et renvoie vers `reschedule-tasks`.
+  les `ancien-*` et la coquille `coquille`, et n'en crée aucun — au pire il prend le plus proche
+  et le signale. Le hook rejette tout libellé inconnu.
+- **Récurrence** : appliquée en langage naturel si elle est précisée, choisie par lui si
+  elle est vague. Le hook refuse `update-tasks` avec une date **sur une tâche récurrente**
+  (ça écraserait la récurrence) et renvoie vers `reschedule-tasks`.
 - **Dates** : `reschedule-tasks` déplace une tâche déjà datée ; `update-tasks` avec
   `dueString` est le seul moyen de dater une tâche qui n'en a pas.
 - **Tâches sans date** : une tâche `p4` — ou demandée « sans date », « backlog », « un
@@ -110,10 +105,11 @@ outil.
 
 ## Ce qu'il fait sans demander
 
-- **Sans confirmation** : toute lecture (Todoist, fichiers, web) et — par défaut — la
-  création et la complétion de tâches. Décochable dans les réglages ⚙.
-- **Avec confirmation** : tout déplacement Todoist, `Bash`, l'écriture de fichiers, le
-  système.
+- **Mode autonome (par défaut)** : tout Todoist part seul — lire, créer, dater, décaler,
+  reprioriser, terminer, supprimer une tâche. Seule la suppression d'un projet, d'une
+  section ou d'un libellé ouvre une carte.
+- **Toujours confirmés** : `Bash`, l'écriture de fichiers, les réglages système.
+- **Mode autonome décoché** : tout déplacement ou suppression Todoist repasse par une carte.
 
 ## Architecture
 
@@ -125,7 +121,6 @@ src/agent/prompt.mjs   personnalité et règles métier (PROMPT_VERSION à incr�
 src/agent/guards.mjs   hooks PreToolUse : refusent l'outil tant qu'il manque une info
 src/agent/registry.mjs mémoire id -> nom des objets Todoist croisés
 src/agent/summary.mjs  traduction d'une demande d'autorisation en français lisible
-src/agent/intent.mjs   « L’utilisateur a-t-il demandé ce changement ? » (sinon : carte)
 src/agent/impact.mjs   modèle avant/après d'un déplacement, avec chevauchements
 src/renderer/          interface : chat, markdown maison, cartes d'outils, schéma d'impact
 scripts/               icône, build, installation, prévisualisation, test d'intégration
@@ -154,7 +149,6 @@ npm run build                 # produit build/Assistant Todoist.app (signature a
 npm run install-app           # copie dans /Applications + épingle au Dock
 
 node scripts/selftest.mjs     # test d'intégration : vraie session agent + Todoist
-node scripts/intent-test.mjs  # « est-ce que l’utilisateur a demandé ce changement ? »
 node scripts/impact-test.mjs  # modèle avant/après d'un déplacement
 node scripts/permission-test.mjs  # ce qui ouvre une carte, ce qui passe seul
 npx electron scripts/preview.mjs sortie.png   # capture l'UI avec une conversation factice
@@ -185,9 +179,9 @@ sur Apple Silicon : `scripts/build-app.sh` s'en charge.
 - L'occupation de l'agent ne peut pas se compter en envois : deux messages peuvent être
   fondus dans un seul tour, donc un seul `result`. Elle suit son activité réelle.
 - `init` peut arriver plusieurs fois dans une session — dédupliquer les notes qui en dépendent.
-- La reconnaissance d'une demande ne porte que sur les messages **du tour en cours** :
-  élargie aux précédents, une tâche nommée deux demandes plus tôt passait pour une
-  consigne actuelle et le bousculage filait sans validation.
+- Faire valider les décisions de l'agent (métadonnées devinées, tâche bousculée) coûtait
+  un aller-retour au clavier à chaque demande : mieux vaut qu'il tranche, qu'il l'annonce,
+  et qu'on corrige après coup. Seul l'irrattrapable — un conteneur supprimé — se valide.
 - La mémoire des tâches (`taches-connues.json` dans le dossier de l'app) doit survivre au
   redémarrage : sans elle, une conversation reprise affiche « une tâche non identifiée »
   dans les validations et le schéma d'impact ne peut pas se dessiner.
