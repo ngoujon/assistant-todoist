@@ -9,14 +9,12 @@ const sendBtn = document.getElementById('btn-send')
 const statusLine = document.getElementById('status-line')
 const settingsPanel = document.getElementById('settings')
 const modelSelect = document.getElementById('model')
-const autoTodoist = document.getElementById('auto-todoist')
+const endpointInput = document.getElementById('endpoint')
 
 let busy = false
 let currentText = null // { el, raw }
 let currentThinking = null
 let toolEls = new Map()
-/** Demandes de validation encore ouvertes, dans l'ordre d'arrivée. */
-const pendingPerms = []
 
 // ------------------------------------------------------------------ helpers
 
@@ -46,7 +44,6 @@ function add(node) {
 }
 
 function clearThread() {
-  pendingPerms.length = 0
   thread.replaceChildren()
   currentText = null
   currentThinking = null
@@ -139,49 +136,6 @@ function summarizeInput(name, input) {
   }
   const first = Object.values(input).find((v) => typeof v === 'string' && v)
   return first ? String(first) : ''
-}
-
-/** Outils dont le résumé est du texte technique : à afficher en chasse fixe. */
-const MONO_TOOLS = new Set(['Bash', 'Write', 'Edit'])
-
-// Rend un objet d'entrée lisible : « clé : valeur », sans accolades ni guillemets.
-const FIELD_LABELS = {
-  content: 'tâche', description: 'détail', due: 'échéance', dueString: 'échéance',
-  priority: 'priorité', projectId: 'projet', sectionId: 'section', labels: 'libellés',
-  deadline: 'date limite', duration: 'durée', name: 'nom', file_path: 'fichier',
-  command: 'commande', url: 'adresse', query: 'recherche', searchTerm: 'recherche',
-  id: 'id', ids: 'ids', assigneeId: 'assigné à', parentId: 'parent',
-}
-
-function humanizeInput(value, depth = 0, lines = []) {
-  if (lines.length > 18) return lines
-  if (Array.isArray(value)) {
-    value.slice(0, 6).forEach((item, i) => {
-      if (item && typeof item === 'object') {
-        lines.push(`${'  '.repeat(depth)}${i + 1}.`)
-        humanizeInput(item, depth + 1, lines)
-      } else {
-        lines.push(`${'  '.repeat(depth)}• ${item}`)
-      }
-    })
-    if (value.length > 6) lines.push(`${'  '.repeat(depth)}… +${value.length - 6}`)
-    return lines
-  }
-  if (value && typeof value === 'object') {
-    for (const [k, v] of Object.entries(value)) {
-      if (v == null || v === '') continue
-      const label = FIELD_LABELS[k] || k
-      if (typeof v === 'object') {
-        lines.push(`${'  '.repeat(depth)}${label} :`)
-        humanizeInput(v, depth + 1, lines)
-      } else {
-        lines.push(`${'  '.repeat(depth)}${label} : ${v}`)
-      }
-    }
-    return lines
-  }
-  lines.push(`${'  '.repeat(depth)}${value}`)
-  return lines
 }
 
 // ------------------------------------------------------------------- rendu
@@ -300,98 +254,84 @@ function addNote(text, kind) {
   add(el('div', `note${kind ? ` ${kind}` : ''}`, text))
 }
 
-// -------------------------------------------------------------- permissions
+// ------------------------------------------------------------------- recap
 
-function addPermission(evt) {
+/**
+ * Rien n'est soumis avant : on rend compte après. Une carte par tour, avec un bouton
+ * qui rejoue les actions à l'envers — c'est le seul point de contrôle de l'app.
+ */
+function addRecap(evt) {
   finishText()
   finishThinking()
-  const [glyph, label] = describeTool(evt.toolName)
-  const card = el('div', `msg perm${evt.summary?.danger ? ' danger' : ''}`)
-  card.appendChild(el('div', 't', evt.title || `${glyph} ${label} ?`))
-  const sub = evt.subtitle || evt.reason
-  if (sub) card.appendChild(el('div', 's', sub))
-  if (evt.hint) card.appendChild(el('div', 's warn', evt.hint))
 
-  // Un déplacement se comprend mieux dessiné que raconté.
-  const schema = renderImpact(evt.impact)
-  if (schema) card.appendChild(schema)
+  const card = el('div', `msg recap${evt.undoTurn ? ' undone' : ''}`)
+  const done = evt.items.filter((i) => i.state === 'done').length
+  card.appendChild(el('div', 't', evt.undoTurn
+    ? 'Annulation appliquée'
+    : `${done || evt.items.length} ${done === 1 ? 'modification appliquée' : 'modifications appliquées'}`))
 
-  const lines = evt.summary?.lines || []
-  if (lines.length) {
-    // Résumé en clair : on doit comprendre ce qu'on valide sans lire de JSON.
-    const mono = MONO_TOOLS.has(evt.toolName)
-    const box = el('div', 'summary')
-    for (const line of lines) {
-      const [head, ...rest] = String(line).split('\n')
-      const item = el('div', mono ? 'sline mono' : 'sline')
-      item.appendChild(el('span', 'head', head))
-      if (rest.length) item.appendChild(el('span', 'meta', rest.join(' ')))
-      box.appendChild(item)
+  for (const item of evt.items) {
+    const block = el('div', `ritem ${item.state}`)
+    const head = el('div', 'rtitle')
+    head.appendChild(el('span', 'rverb', item.title))
+    if (item.state === 'failed') head.appendChild(el('span', 'rtag err', 'échec'))
+    else if (item.state === 'unknown') head.appendChild(el('span', 'rtag err', 'issue inconnue'))
+    else if (item.note) head.appendChild(el('span', `rtag${item.undoable ? '' : ' warn'}`, item.note))
+    block.appendChild(head)
+
+    for (const line of item.lines || []) {
+      const row = el('div', item.mono ? 'sline mono' : 'sline')
+      row.appendChild(el('span', 'head', line.head))
+      if (line.meta) row.appendChild(el('span', 'meta', line.meta))
+      block.appendChild(row)
     }
-    card.appendChild(box)
 
-    const raw = humanizeInput(evt.input).join('\n')
-    if (raw) {
-      const pre = el('pre', 'hidden', raw)
-      const toggle = el('button', 'detail-toggle', 'Voir le détail technique')
-      toggle.addEventListener('click', () => {
-        const hidden = pre.classList.toggle('hidden')
-        toggle.textContent = hidden ? 'Voir le détail technique' : 'Masquer le détail'
-      })
-      card.append(toggle, pre)
-    }
-  } else {
-    const detail = evt.toolName === 'Bash'
-      ? String(evt.input?.command || '')
-      : humanizeInput(evt.input).join('\n')
-    if (detail) card.appendChild(el('pre', null, detail))
+    // Un déplacement se comprend mieux dessiné que raconté.
+    const schema = renderImpact(item.impact)
+    if (schema) block.appendChild(schema)
+
+    card.appendChild(block)
   }
 
-  const btns = el('div', 'btns')
-  const entry = { id: evt.id }
-  const answer = (a) => {
-    if (!pendingPerms.includes(entry)) return
-    pendingPerms.splice(pendingPerms.indexOf(entry), 1)
-    api.replyPermission(evt.id, a)
-    card.classList.add('answered')
-    card.classList.remove('active')
-    const verdict = a.behavior === 'allow' ? (a.always ? '✓ Toujours autorisé' : '✓ Autorisé') : '✕ Refusé'
-    card.appendChild(el('div', 's', verdict))
-    refreshActivePerm()
-    input.focus()
+  if (!evt.undoTurn && evt.undoable) {
+    const btns = el('div', 'btns')
+    const undo = el('button', 'undo')
+    undo.append(undoGlyph(), document.createTextNode(
+      evt.undoable === evt.items.length ? 'Annuler' : `Annuler ce qui peut l'être (${evt.undoable}/${evt.items.length})`,
+    ))
+    undo.addEventListener('click', async () => {
+      undo.disabled = true
+      undo.textContent = 'Annulation en cours…'
+      const ok = await api.undo(evt.id)
+      if (ok) {
+        card.classList.add('undoing')
+        setBusy(true)
+      } else {
+        undo.textContent = 'Trop tard : plus annulable'
+      }
+    })
+    btns.appendChild(undo)
+    card.appendChild(btns)
   }
-  entry.allow = () => answer({ behavior: 'allow' })
-  entry.deny = (message) => answer({ behavior: 'deny', message: message || 'Refusé par l’utilisateur.' })
-  entry.card = card
-  pendingPerms.push(entry)
 
-  const yes = el('button', 'primary')
-  yes.append(document.createTextNode('Autoriser'), el('kbd', null, '↩'))
-  yes.addEventListener('click', () => entry.allow())
-  const no = el('button', null)
-  no.append(document.createTextNode('Refuser'), el('kbd', null, 'esc'))
-  no.addEventListener('click', () => entry.deny())
-
-  // « Toujours » est volontairement absent des actions qui touchent a l'existant :
-  // chaque deplacement doit etre valide un par un.
-  if (evt.allowAlways) {
-    const always = el('button', null, 'Toujours')
-    always.addEventListener('click', () => answer({ behavior: 'allow', always: true }))
-    btns.append(yes, always, no)
-  } else {
-    btns.append(yes, no)
-  }
-  card.appendChild(btns)
-  card.appendChild(el('div', 'kb-hint', 'Champ vide : ↩ autorise, esc refuse.'))
   add(card)
-  refreshActivePerm()
   scrollDown(true)
 }
 
-/** Met en évidence la demande qui répondra aux raccourcis clavier. */
-function refreshActivePerm() {
-  for (const p of pendingPerms) p.card.classList.remove('active')
-  pendingPerms[0]?.card.classList.add('active')
+function undoGlyph() {
+  const svg = document.createElementNS('http://www.w3.org/2000/svg', 'svg')
+  svg.setAttribute('viewBox', '0 0 24 24')
+  svg.setAttribute('width', '13')
+  svg.setAttribute('height', '13')
+  svg.setAttribute('fill', 'none')
+  svg.setAttribute('stroke', 'currentColor')
+  svg.setAttribute('stroke-width', '2.2')
+  svg.setAttribute('stroke-linecap', 'round')
+  svg.setAttribute('stroke-linejoin', 'round')
+  const path = document.createElementNS('http://www.w3.org/2000/svg', 'path')
+  path.setAttribute('d', 'M4 9h11a5 5 0 0 1 0 10h-6M4 9l4-4M4 9l4 4')
+  svg.appendChild(path)
+  return svg
 }
 
 // -------------------------------------------------------------------- etat
@@ -423,14 +363,6 @@ function submit(forced) {
   const text = (forced ?? input.value).trim()
   if (!text) return
 
-  // Une demande de validation encore ouverte bloquerait l'agent sur son outil :
-  // écrire autre chose vaut refus, sinon le message resterait sans effet.
-  const pending = pendingPerms[0]
-  if (pending) {
-    pending.deny(`L’utilisateur a répondu autre chose : « ${text} »`)
-    addNote('Demande refusée : tu as répondu autre chose.')
-  }
-
   // Envoi possible même pendant un traitement : le CLI fond le message dans le
   // tour en cours, l'agent le prend en compte et recalcule sa réponse.
   const queued = busy
@@ -459,24 +391,6 @@ input.addEventListener('keydown', (e) => {
 })
 
 document.addEventListener('keydown', (e) => {
-  const pending = pendingPerms[0]
-  if (pending) {
-    // Entrée n'autorise que si le composeur est vide : sinon l’utilisateur est en train
-    // de répondre par écrit, et sa phrase ne doit pas valider une action.
-    if (e.key === 'Enter' && !e.shiftKey && !e.isComposing && !input.value.trim()) {
-      e.preventDefault()
-      e.stopPropagation()
-      pending.allow()
-      return
-    }
-    if (e.key === 'Escape') {
-      e.preventDefault()
-      e.stopPropagation()
-      pending.deny()
-      return
-    }
-    return
-  }
   if (e.key === 'Escape' && busy) {
     e.preventDefault()
     api.interrupt()
@@ -502,7 +416,32 @@ document.getElementById('btn-settings').addEventListener('click', () => {
 document.getElementById('btn-workspace').addEventListener('click', () => api.openWorkspace())
 
 modelSelect.addEventListener('change', () => api.setConfig({ model: modelSelect.value }))
-autoTodoist.addEventListener('change', () => api.setConfig({ autoTodoist: autoTodoist.checked }))
+
+// L'adresse ne se valide qu'une fois la saisie finie : sinon on redémarrerait la
+// session à chaque caractère tapé.
+endpointInput.addEventListener('change', async () => {
+  const endpoint = endpointInput.value.trim()
+  if (!endpoint) return
+  api.setConfig({ endpoint })
+  await refreshModels(modelSelect.value)
+})
+
+/** Peuple la liste avec ce que le serveur local sert vraiment. */
+async function refreshModels(preferred) {
+  const { models, error } = await api.models()
+  modelSelect.replaceChildren()
+  if (!models.length) {
+    const opt = el('option', null, preferred || 'aucun modèle joignable')
+    if (preferred) opt.value = preferred
+    modelSelect.appendChild(opt)
+    modelSelect.title = error ? `Serveur injoignable : ${error}` : ''
+    return
+  }
+  for (const id of models) modelSelect.appendChild(Object.assign(el('option', null, id), { value: id }))
+  modelSelect.title = ''
+  modelSelect.value = models.includes(preferred) ? preferred : models[0]
+  if (modelSelect.value !== preferred) api.setConfig({ model: modelSelect.value })
+}
 
 document.addEventListener('click', (e) => {
   const link = e.target.closest('a[data-ext]')
@@ -549,8 +488,8 @@ api.onEvent((evt) => {
     case 'tool-result':
       endTool(evt)
       break
-    case 'permission':
-      addPermission(evt)
+    case 'recap':
+      addRecap(evt)
       break
     case 'result':
       finishText()
@@ -588,8 +527,8 @@ api.onEvent((evt) => {
 // ---------------------------------------------------------------- demarrage
 
 const state = await api.init()
-modelSelect.value = state.config.model
-autoTodoist.checked = Boolean(state.config.autoTodoist)
+endpointInput.value = state.config.endpoint || ''
+await refreshModels(state.config.model)
 showWelcome()
 setBusy(false)
 input.focus()

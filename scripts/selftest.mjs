@@ -7,7 +7,7 @@ import path from 'node:path'
 
 const workspace = path.join(os.tmpdir(), 'assistant-todoist-selftest')
 fs.mkdirSync(workspace, { recursive: true })
-const seen = { ready: null, text: '', tools: [], perms: [], done: false }
+const seen = { ready: null, text: '', tools: [], recaps: [], done: false }
 
 const session = new AgentSession({
   emit: (e) => {
@@ -15,15 +15,14 @@ const session = new AgentSession({
     if (e.k === 'text-delta') seen.text += e.text
     if (e.k === 'tool-use') { seen.tools.push(e.name); console.log('OUTIL  ', e.name) }
     if (e.k === 'tool-result') console.log('RESULT ', e.name, e.ok ? 'ok' : 'ERREUR')
+    if (e.k === 'recap') {
+      seen.recaps.push(e)
+      console.log('RECAP  ', e.items.length, 'action(s),', e.undoable, 'annulable(s)')
+    }
     if (e.k === 'error') console.log('ERREUR ', e.message)
     if (e.k === 'result') seen.done = true
   },
-  askPermission: async (req) => {
-    seen.perms.push(req.toolName)
-    console.log('PERM   demandee pour', req.toolName, '->', req.title || '')
-    return { behavior: 'deny', message: 'test automatique' }
-  },
-  getConfig: () => ({ model: 'claude-sonnet-5', autoTodoist: false }),
+  getConfig: () => ({ model: 'claude-sonnet-5' }),
   workspace,
 })
 
@@ -38,7 +37,7 @@ session.stop()
 
 console.log('\n--- reponse ---\n' + seen.text.trim().slice(0, 400))
 console.log('\noutils appeles :', seen.tools.join(', ') || 'aucun')
-console.log('permissions demandees :', seen.perms.join(', ') || 'aucune')
+console.log('actions au recap :', seen.recaps.reduce((n, r) => n + r.items.length, 0))
 const ok = seen.ready?.todoist === 'connected' && seen.text.trim().length > 0
 console.log(ok ? '\nSELFTEST OK' : '\nSELFTEST ECHEC')
 process.exit(ok ? 0 : 1)

@@ -5,7 +5,7 @@ let listener = () => {}
 
 contextBridge.exposeInMainWorld('assistant', {
   init: async () => ({
-    config: { model: 'claude-opus-5', autoTodoist: true },
+    config: { model: 'claude-opus-5' },
     workspace: '/tmp',
     version: '1.0.0',
   }),
@@ -13,7 +13,7 @@ contextBridge.exposeInMainWorld('assistant', {
   interrupt: () => {},
   newChat: () => {},
   setConfig: () => {},
-  replyPermission: () => {},
+  undo: async () => true,
   openWorkspace: () => {},
   openExternal: () => {},
   onEvent: (cb) => {

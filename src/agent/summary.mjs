@@ -1,5 +1,5 @@
-// Traduit une demande d'autorisation en français lisible : on doit savoir ce qu'on
-// valide sans lire du JSON ni des identifiants.
+// Traduit une action déjà exécutée en français lisible : le récap doit se lire sans
+// JSON ni identifiants, et dire ce qui a changé — pas ce qu'on a demandé.
 
 const PRIORITY_LABEL = { p1: 'p1 — urgent', p2: 'p2 — important', p3: 'p3 — à faire', p4: 'p4 — un jour' }
 
@@ -23,115 +23,93 @@ const quote = (s) => `« ${String(s).trim()} »`
 const plural = (n, one, many) => (n > 1 ? `${n} ${many}` : one)
 
 /**
- * @returns {{title: string, lines: string[], danger?: boolean} | null}
- *   null = pas de résumé spécifique, l'interface retombe sur le détail brut.
+ * @returns {{title: string, lines: Array<{head: string, meta?: string}>, mono?: boolean} | null}
+ *   null = l'action ne se raconte pas, elle n'a pas sa place dans le récap.
  */
-export function summarizePermission(toolName, input, registry) {
+export function describeAction(toolName, input, registry) {
   const named = (id) => registry?.taskName(id) || 'une tâche non identifiée'
 
   switch (toolName) {
-    case 'mcp__todoist__reschedule-tasks': {
+    case 'mcp__todoist__add-tasks': {
       const tasks = arr(input?.tasks)
       if (!tasks.length) return null
-      const lines = tasks.map((t) => {
-        const before = registry?.task(t.id)?.due
-        const after = frDate(t.date)
-        const from = before ? `${frDate(before)} → ` : ''
-        return `${quote(named(t.id))}\n${from}${after}`
-      })
       return {
-        title: tasks.length === 1
-          ? `Déplacer ${quote(named(tasks[0].id))} ?`
-          : `Déplacer ${tasks.length} tâches ?`,
-        lines,
+        title: `Créé ${plural(tasks.length, 'une tâche', 'tâches')}`,
+        lines: tasks.map((t) => ({
+          head: quote(t.content),
+          meta: [
+            t.dueString ? frNatural(t.dueString) : null,
+            t.duration || null,
+            t.priority ? (PRIORITY_LABEL[t.priority] || t.priority) : null,
+            arr(t.labels).map((l) => `@${l}`).join(' ') || null,
+          ].filter(Boolean).join(' · ') || 'sans détail',
+        })),
       }
     }
 
     case 'mcp__todoist__update-tasks': {
       const tasks = arr(input?.tasks)
       if (!tasks.length) return null
-      const lines = tasks.map((t) => {
-        const changes = []
-        if (t.content) changes.push(`titre → ${quote(t.content)}`)
-        if (t.priority) changes.push(`priorité → ${PRIORITY_LABEL[t.priority] || t.priority}`)
-        if (t.labels) changes.push(`libellés → ${t.labels.map((l) => `@${l}`).join(', ') || 'aucun'}`)
-        if (t.duration) changes.push(`durée → ${t.duration}`)
-        if (t.dueString) changes.push(t.dueString === 'remove' ? 'échéance retirée' : `échéance → ${quote(t.dueString)}`)
-        if (t.deadlineDate) changes.push(`date limite → ${frDate(t.deadlineDate)}`)
-        if (t.projectId) changes.push(`projet → ${registry?.name(t.projectId) || 'un autre projet'}`)
-        if (t.sectionId) changes.push(`section → ${registry?.name(t.sectionId) || 'une autre section'}`)
-        if (t.parentId) changes.push('devient une sous-tâche')
-        if (t.description) changes.push('description modifiée')
-        if (t.responsibleUser) changes.push(`assignée à ${t.responsibleUser}`)
-        return `${quote(named(t.id))}\n${changes.length ? changes.join(' · ') : 'aucun changement détecté'}`
-      })
       return {
-        title: tasks.length === 1
-          ? `Modifier ${quote(named(tasks[0].id))} ?`
-          : `Modifier ${tasks.length} tâches ?`,
-        lines,
+        title: `Modifié ${plural(tasks.length, 'une tâche', 'tâches')}`,
+        lines: tasks.map((t) => ({ head: quote(named(t.id)), meta: changesOf(t, registry) })),
       }
     }
 
-    case 'mcp__todoist__add-tasks': {
+    case 'mcp__todoist__reschedule-tasks': {
       const tasks = arr(input?.tasks)
       if (!tasks.length) return null
-      const lines = tasks.map((t) => {
-        const bits = [
-          t.dueString ? frNatural(t.dueString) : null,
-          t.duration || null,
-          t.priority ? (PRIORITY_LABEL[t.priority] || t.priority) : null,
-          Array.isArray(t.labels) && t.labels.length ? t.labels.map((l) => `@${l}`).join(' ') : null,
-        ].filter(Boolean)
-        return `${quote(t.content)}\n${bits.join(' · ') || 'sans détail'}`
-      })
-      return { title: `Créer ${plural(tasks.length, 'une tâche', 'tâches')} ?`, lines }
+      return {
+        title: `Déplacé ${plural(tasks.length, 'une tâche', 'tâches')}`,
+        lines: tasks.map((t) => {
+          const before = registry?.task(t.id)?.due
+          return {
+            head: quote(named(t.id)),
+            meta: `${before ? `${frDate(before)} → ` : ''}${frDate(t.date) || 'nouvelle date'}`,
+          }
+        }),
+      }
     }
 
     case 'mcp__todoist__complete-tasks': {
       const ids = arr(input?.ids)
       if (!ids.length) return null
-      return {
-        title: `Terminer ${plural(ids.length, 'une tâche', 'tâches')} ?`,
-        lines: ids.map((id) => quote(named(id))),
-      }
+      return { title: `Terminé ${plural(ids.length, 'une tâche', 'tâches')}`, lines: ids.map((id) => ({ head: quote(named(id)) })) }
     }
 
     case 'mcp__todoist__uncomplete-tasks': {
       const ids = arr(input?.ids)
       if (!ids.length) return null
-      return {
-        title: `Rouvrir ${plural(ids.length, 'une tâche', 'tâches')} ?`,
-        lines: ids.map((id) => quote(named(id))),
-      }
+      return { title: `Rouvert ${plural(ids.length, 'une tâche', 'tâches')}`, lines: ids.map((id) => ({ head: quote(named(id)) })) }
     }
 
     case 'mcp__todoist__delete-object': {
       if (!input?.id) return null
       const what = OBJECT_LABEL[input.type] || 'l\'élément'
       const name = input.type === 'task' ? named(input.id) : registry?.name(input.id)
-      return {
-        title: `Supprimer ${what}${name ? ` ${quote(name)}` : ''} ?`,
-        lines: ['Suppression définitive : cette action est irréversible.'],
-        danger: true,
-      }
+      return { title: `Supprimé ${what}${name ? ` ${quote(name)}` : ''}`, lines: [] }
     }
 
     case 'mcp__todoist__project-move': {
       return {
-        title: 'Déplacer vers un autre projet ?',
-        lines: [`${quote(named(input?.id ?? ''))} → ${registry?.name(input?.projectId) || 'un autre projet'}`],
+        title: 'Déplacé vers un autre projet',
+        lines: [{ head: quote(named(input?.id ?? '')), meta: `→ ${registry?.name(input?.projectId) || 'un autre projet'}` }],
       }
+    }
+
+    case 'mcp__todoist__add-projects':
+    case 'mcp__todoist__add-sections':
+    case 'mcp__todoist__add-labels': {
+      const names = collectNames(input)
+      if (!names.length) return null
+      const what = toolName.endsWith('projects') ? 'projet' : toolName.endsWith('sections') ? 'section' : 'libellé'
+      return { title: `Créé ${names.length > 1 ? `${names.length} ${what}s` : `un ${what}`}`, lines: names.map((n) => ({ head: quote(n) })) }
     }
 
     case 'Bash': {
       const command = String(input?.command || '')
       if (!command) return null
-      return {
-        title: 'Exécuter une commande sur ton Mac ?',
-        lines: [command],
-        danger: /\brm\b|\bsudo\b|\bdefaults write\b|\bkillall\b/.test(command),
-      }
+      return { title: 'Commande lancée sur ton Mac', lines: [{ head: command }], mono: true }
     }
 
     case 'Write':
@@ -139,15 +117,37 @@ export function summarizePermission(toolName, input, registry) {
       const file = String(input?.file_path || '')
       if (!file) return null
       const base = file.split('/').pop()
-      return {
-        title: toolName === 'Write' ? `Écrire le fichier ${base} ?` : `Modifier le fichier ${base} ?`,
-        lines: [file],
-      }
+      return { title: toolName === 'Write' ? `Écrit le fichier ${base}` : `Modifié le fichier ${base}`, lines: [{ head: file }], mono: true }
     }
 
     default:
       return null
   }
+}
+
+/** Les champs réellement touchés par un `update-tasks`, en clair. */
+function changesOf(task, registry) {
+  const changes = []
+  if (task.content) changes.push(`titre → ${quote(task.content)}`)
+  if (task.priority) changes.push(`priorité → ${PRIORITY_LABEL[task.priority] || task.priority}`)
+  if (task.labels) changes.push(`libellés → ${arr(task.labels).map((l) => `@${l}`).join(', ') || 'aucun'}`)
+  if (task.duration) changes.push(`durée → ${task.duration}`)
+  if (task.dueString) changes.push(task.dueString === 'remove' ? 'échéance retirée' : `échéance → ${quote(task.dueString)}`)
+  if (task.deadlineDate) changes.push(`date limite → ${frDate(task.deadlineDate)}`)
+  if (task.projectId) changes.push(`projet → ${registry?.name(task.projectId) || 'un autre projet'}`)
+  if (task.sectionId) changes.push(`section → ${registry?.name(task.sectionId) || 'une autre section'}`)
+  if (task.parentId) changes.push('devient une sous-tâche')
+  if (task.description) changes.push('description modifiée')
+  if (task.responsibleUser) changes.push(`assignée à ${task.responsibleUser}`)
+  return changes.join(' · ') || 'aucun changement détecté'
+}
+
+function collectNames(input) {
+  for (const key of ['projects', 'sections', 'labels', 'items']) {
+    const list = arr(input?.[key])
+    if (list.length) return list.map((o) => o?.name || o?.content).filter(Boolean)
+  }
+  return input?.name ? [input.name] : []
 }
 
 function arr(value) {

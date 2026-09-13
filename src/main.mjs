@@ -5,12 +5,20 @@ import os from 'node:os'
 import { fileURLToPath } from 'node:url'
 import { AgentSession } from './agent/session.mjs'
 import { PROMPT_VERSION } from './agent/prompt.mjs'
+import { listLocalModels } from './agent/local-model.mjs'
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url))
 
 const DEFAULT_CONFIG = {
-  model: 'claude-opus-5',
-  autoTodoist: true,
+  // Serveur d'inférence local : l'app ne dépend plus d'un compte Claude ni de l'API
+  // Anthropic. Seul Todoist reste un service distant — c'est là que vivent les tâches.
+  endpoint: 'http://localhost:1234',
+  model: 'qwen/qwen3.8-27b',
+  /**
+   * Contexte réellement chargé dans LM Studio. Le socle du CLI (outils Todoist compris)
+   * pèse à lui seul ~34 000 tokens : en dessous de 65 536, la moindre question échoue.
+   */
+  contextTokens: 65536,
   bounds: { width: 470, height: 780 },
   lastSessionId: null,
   promptVersion: 0,
@@ -22,9 +30,6 @@ let workspace = ''
 let win = null
 let session = null
 let quitting = false
-
-const pendingPermissions = new Map()
-let permissionSeq = 0
 
 // ------------------------------------------------------------------ config
 
@@ -161,57 +166,13 @@ function flushEvents() {
   }
 }
 
-// --------------------------------------------------------------- permission
-
-function askPermission(req) {
-  return new Promise((resolve) => {
-    const id = `perm-${++permissionSeq}`
-    pendingPermissions.set(id, resolve)
-
-    const onAbort = () => {
-      if (pendingPermissions.delete(id)) resolve({ behavior: 'deny', message: 'Annulé.' })
-    }
-    req.signal?.addEventListener('abort', onAbort, { once: true })
-
-    emit({
-      k: 'permission',
-      id,
-      toolName: req.toolName,
-      title: req.title,
-      displayName: req.displayName,
-      subtitle: req.subtitle,
-      reason: req.reason,
-      summary: req.summary,
-      impact: req.impact,
-      hint: req.hint,
-      allowAlways: req.allowAlways !== false,
-      input: req.input,
-    })
-    if (win && !win.isVisible()) win.show()
-  })
-}
-
-function resolvePermission(id, answer) {
-  const resolve = pendingPermissions.get(id)
-  if (!resolve) return
-  pendingPermissions.delete(id)
-  resolve(answer)
-}
-
-function denyAllPending(message) {
-  for (const [id, resolve] of pendingPermissions) {
-    pendingPermissions.delete(id)
-    resolve({ behavior: 'deny', message })
-  }
-}
-
 // ---------------------------------------------------------------------- IPC
 
 function wireIpc() {
   ipcMain.handle('app:init', () => {
     setImmediate(flushEvents)
     return {
-      config: { model: config.model, autoTodoist: config.autoTodoist },
+      config: { model: config.model, endpoint: config.endpoint, contextTokens: config.contextTokens },
       workspace,
       version: app.getVersion(),
     }
@@ -225,20 +186,31 @@ function wireIpc() {
   ipcMain.on('chat:interrupt', () => { session.interrupt() })
 
   ipcMain.on('chat:new', () => {
-    denyAllPending('Nouvelle conversation.')
     config.lastSessionId = null
     saveConfig()
     session.start({})
   })
 
-
   ipcMain.on('chat:config', (_e, patch) => {
+    const endpointChanged = patch.endpoint && patch.endpoint !== config.endpoint
     Object.assign(config, patch)
     saveConfig()
     if (patch.model) session.setModel(patch.model)
+    // Changer de serveur veut dire changer d'adaptateur : la session repart dessus.
+    if (endpointChanged) session.start({})
   })
 
-  ipcMain.on('perm:reply', (_e, { id, answer }) => resolvePermission(id, answer))
+  // Les modèles proposés sont ceux que le serveur local sert réellement.
+  ipcMain.handle('app:models', async () => {
+    try {
+      return { models: await listLocalModels(config.endpoint) }
+    } catch (err) {
+      return { models: [], error: String(err?.message || err) }
+    }
+  })
+
+  // Le récap donne l'identifiant ; la session sait quels appels inverses rejouer.
+  ipcMain.handle('chat:undo', (_e, recapId) => session.undo(recapId))
 
   ipcMain.on('app:open-workspace', () => shell.openPath(workspace))
   ipcMain.on('app:open-external', (_e, url) => {
@@ -265,11 +237,10 @@ function buildMenu() {
         {
           label: 'Nouvelle conversation',
           accelerator: 'CmdOrCtrl+N',
-          click: () => { denyAllPending('Nouvelle conversation.'); session.start({}); emit({ k: 'cleared' }) },
+          click: () => { session.start({}); emit({ k: 'cleared' }) },
         },
         {
-          // Pas d'accelerateur « Esc » : la touche est traitee dans l'interface,
-          // ou elle refuse d'abord une demande de validation en attente.
+          // Pas d'accelerateur « Esc » : la touche est traitee dans l'interface.
           label: 'Interrompre',
           accelerator: 'CmdOrCtrl+.',
           click: () => session.interrupt(),
@@ -319,7 +290,6 @@ if (!app.requestSingleInstanceLock()) {
         if (evt.k === 'result') saveTasksSnapshot()
         emit(evt)
       },
-      askPermission,
       getConfig: () => config,
       workspace,
       tasksSnapshot: loadTasksSnapshot(),
@@ -350,8 +320,7 @@ if (!app.requestSingleInstanceLock()) {
 
   app.on('before-quit', () => {
     quitting = true
-    denyAllPending('Fermeture de l\'application.')
-    session?.stop()
+    session?.dispose()
   })
 
   app.on('window-all-closed', () => { /* l'app reste dans le Dock */ })

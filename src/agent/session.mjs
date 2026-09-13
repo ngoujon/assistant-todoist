@@ -6,8 +6,8 @@ import { createRequire } from 'node:module'
 import { buildSystemPrompt } from './prompt.mjs'
 import { TodoistGuard } from './guards.mjs'
 import { TaskRegistry } from './registry.mjs'
-import { summarizePermission } from './summary.mjs'
-import { buildImpact } from './impact.mjs'
+import { ActionJournal } from './journal.mjs'
+import { startLocalBridge } from './local-model.mjs'
 
 const HOME = os.homedir()
 const require = createRequire(import.meta.url)
@@ -41,35 +41,10 @@ function resolveClaudeExecutable() {
   return undefined
 }
 
-/** Outils Todoist en lecture seule : jamais de confirmation. */
-const TODOIST_READONLY = /^mcp__todoist__(find|get|search|fetch|list|analyze|export|user-info|view)/
-/** Outils qui deplacent ou suppriment, quel que soit leur contenu. */
-const TODOIST_DISRUPTIVE = /^mcp__todoist__(reschedule|delete|move|reorder|manage|import|project-)/
 /**
- * Regle n°2 : seul ce qui deplace ou supprime se valide. Retoucher un libelle, une
- * priorite, une duree ou un titre est reversible d'un mot : ca ne merite pas un clic.
+ * Rien ne passe plus par une validation : l'agent exécute, l'app rend compte ensuite
+ * et l’utilisateur annule d'un bouton si ça ne lui va pas. Voir `journal.mjs`.
  */
-function movesOrRemoves(toolName, input, registry) {
-  if (TODOIST_DISRUPTIVE.test(toolName)) return true
-  if (toolName !== 'mcp__todoist__update-tasks') return false
-  const tasks = Array.isArray(input?.tasks) ? input.tasks : []
-  return tasks.some((task) => {
-    if (!task || typeof task !== 'object') return false
-    const fields = Object.keys(task)
-    // Changer de projet, de section ou de parent : c'est un deplacement.
-    if (fields.some((k) => /^(projectId|sectionId|parentId)$/.test(k))) return true
-    if (!fields.some((k) => /^(due|deadlineDate$)/.test(k))) return false
-    // Dater une tache qui n'avait pas de date revient a la creer : rien n'est bouscule.
-    // Ecraser une date existante, si.
-    return Boolean(registry?.task(task.id)?.due)
-  })
-}
-/** Outils internes sans effet de bord. */
-const SAFE_BUILTIN = new Set([
-  'Read', 'Glob', 'Grep', 'WebSearch', 'WebFetch', 'TodoWrite', 'Task',
-  'ToolSearch', 'ListMcpResourcesTool', 'ReadMcpResourceTool', 'ReadMcpResourceDirTool',
-  'Skill', 'AskUserQuestion', 'TaskOutput',
-])
 
 function createInputQueue() {
   const pending = []
@@ -100,13 +75,11 @@ export class AgentSession {
   /**
    * @param {object} deps
    * @param {(evt: object) => void} deps.emit           envoie un evenement au renderer
-   * @param {(req: object) => Promise<object>} deps.askPermission
-   * @param {() => object} deps.getConfig               { model, autoTodoist }
+   * @param {() => object} deps.getConfig               { model }
    * @param {string} deps.workspace
    */
-  constructor({ emit, askPermission, getConfig, workspace, tasksSnapshot }) {
+  constructor({ emit, getConfig, workspace, tasksSnapshot }) {
     this.emit = emit
-    this.askPermission = askPermission
     this.getConfig = getConfig
     this.workspace = workspace
     this.q = null
@@ -117,9 +90,13 @@ export class AgentSession {
     this.streamedMessages = new Set()
     this.toolNames = new Map()
     // La mémoire des tâches survit aux redémarrages : sans elle, une conversation
-    // reprise afficherait « tâche a1B2 » au lieu du nom dans les validations.
+    // reprise afficherait « tâche a1B2 » au lieu du nom dans le récap — et surtout
+    // n'aurait plus l'état d'avant qu'exige « Annuler ».
     this.registry = new TaskRegistry(tasksSnapshot)
     this.guard = new TodoistGuard(this.registry, () => this.recentUserText.join(' '))
+    this.journal = new ActionJournal(this.registry)
+    /** Le tour en cours est-il une annulation ? Son récap se lit autrement. */
+    this.undoTurn = false
     this.readyTimer = null
     this.retries = 0
     /**
@@ -130,6 +107,11 @@ export class AgentSession {
     this.recentUserText = []
     /** Messages envoyes mais pas encore aboutis : rejoues si la session redemarre. */
     this.unanswered = []
+    /** Adaptateur vers le serveur d'IA local (voir local-model.mjs). */
+    this.bridge = null
+    this.bridgeUrl = null
+    this.bridgeEndpoint = null
+    this.pendingStart = null
   }
 
   get running() { return this.q !== null }
@@ -141,8 +123,8 @@ export class AgentSession {
       cwd: this.workspace,
       additionalDirectories: [HOME],
       model: cfg.model,
-      effort: 'high',
-      thinking: { type: 'adaptive', display: 'summarized' },
+      // `effort` et `thinking` sont propres aux modèles Anthropic : un moteur local
+      // les ignore au mieux, les refuse au pire.
       systemPrompt: {
         type: 'preset',
         preset: 'claude_code',
@@ -165,11 +147,44 @@ export class AgentSession {
         ...process.env,
         PATH: [...new Set([...EXTRA_PATH, ...(process.env.PATH || '').split(':')])].filter(Boolean).join(':'),
         CLAUDE_AGENT_SDK_CLIENT_APP: 'assistant-todoist/1.0.0',
+        // L'inférence part vers le serveur local, via l'adaptateur : plus une requête
+        // vers Anthropic, et plus besoin d'un compte Claude pour que l'app tourne.
+        ANTHROPIC_BASE_URL: this.bridgeUrl,
+        ANTHROPIC_AUTH_TOKEN: 'local',
+        ANTHROPIC_API_KEY: '',
+        ANTHROPIC_MODEL: cfg.model,
+        ANTHROPIC_SMALL_FAST_MODEL: cfg.model,
+        ANTHROPIC_DEFAULT_HAIKU_MODEL: cfg.model,
+        // Le modèle local est inconnu du CLI : sans ça il suppose 200 k et compacte de travers.
+        CLAUDE_CODE_MAX_CONTEXT_TOKENS: String(cfg.contextTokens || 65536),
+        // Rien ne doit partir vers Anthropic, pas même un ping de télémétrie.
+        CLAUDE_CODE_DISABLE_NONESSENTIAL_TRAFFIC: '1',
+        DISABLE_TELEMETRY: '1',
+        DISABLE_ERROR_REPORTING: '1',
+        DISABLE_AUTOUPDATER: '1',
+        DISABLE_BUG_COMMAND: '1',
       },
       ...(claudeBin ? { pathToClaudeCodeExecutable: claudeBin } : {}),
       stderr: (d) => { if (process.env.ASSISTANT_DEBUG) process.stderr.write(`[claude] ${d}`) },
-      canUseTool: (toolName, input, opts) => this.handlePermission(toolName, input, opts),
+      // Tout est autorisé : le contrôle se fait après coup, par le récap et son « Annuler ».
+      canUseTool: async (_toolName, input) => ({ behavior: 'allow', updatedInput: input }),
     }
+  }
+
+  /**
+   * Ouvre l'adaptateur vers le serveur d'IA local. Le CLI ne parle qu'à lui : il traduit
+   * ce que le moteur local ne sait pas avaler, et traduit ses erreurs en français.
+   */
+  async ensureBridge() {
+    const endpoint = this.getConfig().endpoint
+    if (this.bridge && this.bridgeEndpoint === endpoint) return
+    try { this.bridge?.close() } catch {}
+    this.bridge = await startLocalBridge({
+      upstream: endpoint,
+      onNote: (message) => this.emit({ k: 'error', message }),
+    })
+    this.bridgeEndpoint = endpoint
+    this.bridgeUrl = this.bridge.url
   }
 
   start({ resume, replay } = {}) {
@@ -181,29 +196,25 @@ export class AgentSession {
     this.resumeNotified = false
     this.streamedMessages = new Set()
     this.guard = new TodoistGuard(this.registry, () => this.recentUserText.join(' '))
+    // Les appels en vol sont perdus par le redémarrage ; les récaps déjà rendus restent annulables.
+    this.journal.reset()
+    if (!this.bridgeUrl) {
+      // L'adaptateur n'est pas encore prêt : on relance dès qu'il l'est.
+      this.pendingStart = { resume, replay }
+      this.ensureBridge().then(() => {
+        const pending = this.pendingStart
+        this.pendingStart = null
+        if (pending) this.start(pending)
+      }).catch((err) => {
+        this.emit({ k: 'error', message: `Adaptateur local indisponible : ${String(err?.message || err)}` })
+        this.emit({ k: 'status', state: 'idle' })
+      })
+      return
+    }
     this.q = query({ prompt: this.queue, options: this.buildOptions(resume) })
     this.emit({ k: 'status', state: 'connecting' })
     this.pump()
     for (const message of replay || []) this.queue.push(message)
-  }
-
-  /**
-   * Le CLI n'initialise la session qu'au premier message : on ne surveille donc qu'a
-   * partir de la, et on relance une fois si rien ne revient.
-   */
-  armReadyWatchdog() {
-    clearTimeout(this.readyTimer)
-    this.readyTimer = setTimeout(() => {
-      if (this.sessionId) return
-      if (this.retries < 2) {
-        this.retries += 1
-        this.emit({ k: 'note', text: 'Connexion lente, nouvelle tentative…' })
-        this.start({ replay: this.unanswered.slice() })
-        return
-      }
-      this.emit({ k: 'error', message: "L'agent ne répond pas. Ferme et rouvre l'application." })
-      this.emit({ k: 'status', state: 'idle' })
-    }, 40000)
   }
 
   /**
@@ -250,6 +261,7 @@ export class AgentSession {
 
   stop() {
     clearTimeout(this.readyTimer)
+    this.pendingStart = null
     try { this.queue?.close() } catch {}
     try { this.abort?.abort() } catch {}
     this.q = null
@@ -257,11 +269,26 @@ export class AgentSession {
     this.busy = false
   }
 
-  send(text) {
+  /**
+   * @param {string} text
+   * @param {{fromUser?: boolean}} [opts] une consigne d'annulation n'est pas une demande
+   *   de l’utilisateur : elle ne doit pas peser sur les garde-fous qui lisent ses mots.
+   */
+  /** Ferme l'adaptateur : à la fermeture de l'app seulement, il survit aux redémarrages de session. */
+  dispose() {
+    this.stop()
+    try { this.bridge?.close() } catch {}
+    this.bridge = null
+    this.bridgeUrl = null
+  }
+
+  send(text, { fromUser = true } = {}) {
     if (!this.q) this.start({})
     this.markBusy()
-    this.recentUserText.unshift(text)
-    this.recentUserText.length = Math.min(this.recentUserText.length, 3)
+    if (fromUser) {
+      this.recentUserText.unshift(text)
+      this.recentUserText.length = Math.min(this.recentUserText.length, 3)
+    }
     this.emit({ k: 'turn-start' })
     const message = {
       type: 'user',
@@ -284,11 +311,31 @@ export class AgentSession {
     this.emit({ k: 'status', state: 'thinking' })
   }
 
+  /**
+   * Rejoue à l'envers les actions d'un récap. Les garde-fous sont mis en veille : ils
+   * empêchent d'écrire n'importe quoi, pas de remettre exactement ce qui était là.
+   * @returns {boolean} false si le récap n'est plus annulable.
+   */
+  undo(recapId) {
+    const message = this.journal.undoMessage(recapId)
+    if (!message) return false
+    this.undoTurn = true
+    this.guard.suspend()
+    this.emit({ k: 'turn-start' })
+    this.send(message, { fromUser: false })
+    return true
+  }
+
   async interrupt() {
     if (!this.q || !this.busy) return
     try { await this.q.interrupt() } catch {}
     this.busy = false
+    // Ce qui est déjà parti chez Todoist reste fait : le récap doit quand même sortir.
+    const recap = this.journal.closeTurn(this.undoTurn)
+    this.undoTurn = false
+    this.guard.resume()
     this.emit({ k: 'interrupted' })
+    if (recap) this.emit({ k: 'recap', ...recap })
     this.emit({ k: 'status', state: 'idle' })
   }
 
@@ -349,6 +396,8 @@ export class AgentSession {
         for (const block of msg.message?.content || []) {
           if (block.type === 'tool_use') {
             this.toolNames.set(block.id, block.name)
+            // Avant l'exécution : c'est le dernier moment où la mémoire tient l'état d'avant.
+            this.journal.noteCall(block.id, block.name, block.input)
             this.emit({ k: 'tool-use', id: block.id, name: block.name, input: block.input })
           } else if (block.type === 'text' && !alreadyStreamed && block.text?.trim()) {
             this.emit({ k: 'text-start' })
@@ -365,6 +414,7 @@ export class AgentSession {
           if (block.type !== 'tool_result') continue
           const name = this.toolNames.get(block.tool_use_id) || ''
           const raw = textOf(block.content)
+          this.journal.noteResult(block.tool_use_id, !block.is_error, raw)
           this.guard.noteToolResult(name, raw)
           this.registry.note(raw)
           this.emit({
@@ -394,10 +444,14 @@ export class AgentSession {
         break
       }
 
-      case 'result':
+      case 'result': {
         this.unanswered = []
         this.recentUserText = []
         this.busy = false
+        const recap = this.journal.closeTurn(this.undoTurn)
+        this.undoTurn = false
+        this.guard.resume()
+        if (recap) this.emit({ k: 'recap', ...recap })
         this.emit({
           k: 'result',
           isError: msg.subtype !== 'success',
@@ -407,56 +461,9 @@ export class AgentSession {
         })
         this.emit({ k: 'status', state: 'idle' })
         break
+      }
     }
   }
-
-  // ------------------------------------------------------------ permissions
-
-  async handlePermission(toolName, input, opts) {
-    const cfg = this.getConfig()
-    const touchesExisting = movesOrRemoves(toolName, input, this.registry)
-
-    // Mode autonome : l'agent execute et improvise, l’utilisateur corrige apres coup d'un
-    // mot. Seule exception, un conteneur supprime emporte tout ce qu'il contient et
-    // ne se rattrape pas : celui-la seul ouvre encore une carte.
-    if (cfg.autoTodoist) {
-      if (!wipesContainer(toolName, input)) return { behavior: 'allow', updatedInput: input }
-    } else if (!touchesExisting) {
-      if (SAFE_BUILTIN.has(toolName)) return { behavior: 'allow', updatedInput: input }
-      if (TODOIST_READONLY.test(toolName)) return { behavior: 'allow', updatedInput: input }
-    }
-
-    const summary = summarizePermission(toolName, input, this.registry)
-    const impact = buildImpact(toolName, input, this.registry)
-
-    const answer = await this.askPermission({
-      toolName,
-      input,
-      summary,
-      impact,
-      title: summary?.title || opts?.title,
-      displayName: opts?.displayName,
-      subtitle: opts?.subtitle,
-      reason: opts?.decisionReason,
-      hint: wipesContainer(toolName, input)
-        ? 'Cette suppression emporte tout ce que le conteneur contient.'
-        : touchesExisting ? 'Cette action déplace ou supprime des tâches existantes.' : undefined,
-      allowAlways: !touchesExisting,
-      signal: opts?.signal,
-    })
-
-    if (answer?.behavior === 'allow') {
-      const res = { behavior: 'allow', updatedInput: input }
-      if (answer.always && opts?.suggestions?.length) res.updatedPermissions = opts.suggestions
-      return res
-    }
-    return { behavior: 'deny', message: answer?.message || 'Refuse par l\'utilisateur.' }
-  }
-}
-
-/** Supprimer un projet, une section ou un libellé emporte tout ce qu'il contient. */
-function wipesContainer(toolName, input) {
-  return toolName === 'mcp__todoist__delete-object' && Boolean(input?.type) && input.type !== 'task'
 }
 
 function textOf(content) {

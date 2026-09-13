@@ -25,40 +25,74 @@ const SCRIPT = [
   },
   { evt: { k: 'result', isError: false, costUsd: 0.03, durationMs: 6400 } },
   { user: 'p2, 30 min, décale Tâche B à demain 9h, ponctuel' },
+  { evt: { k: 'tool-use', id: 't2', name: 'mcp__todoist__reschedule-tasks', input: { tasks: [{ id: 'A', date: '2026-08-31T09:45:00' }] } } },
+  { evt: { k: 'tool-result', id: 't2', name: 'mcp__todoist__reschedule-tasks', ok: true, preview: 'ok' } },
+  { evt: { k: 'text-start' } },
   {
     evt: {
-      k: 'permission',
-      id: 'p1',
-      toolName: 'mcp__todoist__reschedule-tasks',
-      hint: 'Cette action modifie des tâches existantes.',
-      allowAlways: false,
-      title: 'Déplacer « Tâche A » ?',
-      summary: { lines: ['« Tâche A »\nsamedi 29 août à 9h30 → lundi 31 août à 9h45'] },
-      impact: {
-        days: [
-          {
-            day: '2026-08-31',
-            label: 'lundi 31 août',
-            from: 480,
-            to: 900,
-            before: [
-              { id: 'B', name: 'Tâche B', start: 540, end: 660, kind: 'stay' },
-              { id: 'C', name: 'Tâche C', start: 690, end: 735, kind: 'stay' },
-              { id: 'E', name: 'Tâche D', start: 780, end: 810, kind: 'stay' },
-            ],
-            after: [
-              { id: 'B', name: 'Tâche B', start: 540, end: 660, kind: 'stay' },
-              { id: 'A', name: 'Tâche A', start: 615, end: 675, kind: 'moved' },
-              { id: 'C', name: 'Tâche C', start: 690, end: 735, kind: 'stay' },
-              { id: 'E', name: 'Tâche D', start: 780, end: 810, kind: 'stay' },
-            ],
-          },
-        ],
-        conflicts: [{ day: '2026-08-31', moved: 'Tâche A', against: 'Tâche B' }],
-      },
-      input: { tasks: [{ id: 'A', date: '2026-08-31T09:45:00' }] },
+      k: 'text-delta',
+      text: 'C\'est posé. **Tâche A** chevauche maintenant *Tâche B* — dis-moi si tu préfères 11h.',
     },
   },
+  {
+    evt: {
+      k: 'recap',
+      id: 'recap-1',
+      undoTurn: false,
+      undoable: 2,
+      items: [
+        {
+          title: 'Déplacé une tâche',
+          state: 'done',
+          undoable: true,
+          note: null,
+          mono: false,
+          lines: [{ head: '« Tâche A »', meta: 'samedi 29 août à 9h30 → lundi 31 août à 9h45' }],
+          impact: {
+            days: [
+              {
+                day: '2026-08-31',
+                label: 'lundi 31 août',
+                from: 480,
+                to: 900,
+                before: [
+                  { id: 'B', name: 'Tâche B', start: 540, end: 660, kind: 'stay' },
+                  { id: 'C', name: 'Tâche C', start: 690, end: 735, kind: 'stay' },
+                  { id: 'E', name: 'Tâche D', start: 780, end: 810, kind: 'stay' },
+                ],
+                after: [
+                  { id: 'B', name: 'Tâche B', start: 540, end: 660, kind: 'stay' },
+                  { id: 'A', name: 'Tâche A', start: 615, end: 675, kind: 'moved' },
+                  { id: 'C', name: 'Tâche C', start: 690, end: 735, kind: 'stay' },
+                  { id: 'E', name: 'Tâche D', start: 780, end: 810, kind: 'stay' },
+                ],
+              },
+            ],
+            conflicts: [{ day: '2026-08-31', moved: 'Tâche A', against: 'Tâche B' }],
+          },
+        },
+        {
+          title: 'Créé une tâche',
+          state: 'done',
+          undoable: true,
+          note: null,
+          mono: false,
+          lines: [{ head: '« Tâche E »', meta: 'aujourd\'hui 18h · 30m · p2 — important · @libellé-1 @libellé-2' }],
+          impact: null,
+        },
+        {
+          title: 'Supprimé le projet « Projet X »',
+          state: 'done',
+          undoable: false,
+          note: 'une suppression de conteneur ne se rattrape pas',
+          mono: false,
+          lines: [],
+          impact: null,
+        },
+      ],
+    },
+  },
+  { evt: { k: 'result', isError: false, costUsd: 0.05, durationMs: 8100 } },
 ]
 
 app.whenReady().then(async () => {
@@ -99,17 +133,14 @@ app.whenReady().then(async () => {
   fs.writeFileSync(out, image.toPNG())
   console.log('capture :', out)
 
-  // Verification des raccourcis clavier sur la demande de validation.
-  const answeredBefore = await win.webContents.executeJavaScript("document.querySelectorAll('.perm.answered').length")
-  await win.webContents.executeJavaScript(
-    "document.dispatchEvent(new KeyboardEvent('keydown', { key: 'Escape', bubbles: true }))",
+  // Le recap doit proposer d'annuler ce qui peut l'etre, et se griser une fois clique.
+  const undoLabel = await win.webContents.executeJavaScript(
+    "document.querySelector('.recap button.undo')?.textContent || 'aucun bouton'",
   )
+  await win.webContents.executeJavaScript("document.querySelector('.recap button.undo')?.click()")
   await new Promise((r) => setTimeout(r, 200))
-  const answeredAfter = await win.webContents.executeJavaScript("document.querySelectorAll('.perm.answered').length")
-  const verdict = await win.webContents.executeJavaScript(
-    "document.querySelector('.perm.answered .s:last-child')?.textContent || ''",
-  )
-  console.log(`clavier esc : ${answeredBefore} -> ${answeredAfter} carte(s) repondue(s), verdict « ${verdict} »`)
+  const undoing = await win.webContents.executeJavaScript("document.querySelectorAll('.recap.undoing').length")
+  console.log(`bouton annuler : « ${undoLabel} », cartes en cours d'annulation = ${undoing}`)
 
   // Verification : le composeur reste utilisable pendant un traitement.
   await win.webContents.executeJavaScript(`(() => {

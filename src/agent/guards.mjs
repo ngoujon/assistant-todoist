@@ -23,7 +23,16 @@ export class TodoistGuard {
     this.getUserText = getUserText || (() => '')
     /** Libellés réellement présents dans le compte, alimentés par find-labels. */
     this.knownLabels = null
+    /**
+     * En veille pendant une annulation : rétablir l'état d'avant, c'est parfois
+     * réécrire une valeur que ces règles refuseraient d'écrire pour la première fois.
+     */
+    this.suspended = false
   }
+
+  suspend() { this.suspended = true }
+
+  resume() { this.suspended = false }
 
   /** Mémorise les libellés dès que l'agent appelle find-labels. */
   noteToolResult(toolName, rawText) {
@@ -66,6 +75,7 @@ export class TodoistGuard {
   // ------------------------------------------------------------------ regles
 
   checkAddTasks(toolInput) {
+    if (this.suspended) return null
     const tasks = Array.isArray(toolInput?.tasks) ? toolInput.tasks : []
     if (!tasks.length) return null
 
@@ -119,6 +129,7 @@ export class TodoistGuard {
    * seul chemin possible — `reschedule-tasks` exige une date existante.
    */
   checkUpdateTasks(toolInput) {
+    if (this.suspended) return null
     const tasks = Array.isArray(toolInput?.tasks) ? toolInput.tasks : [toolInput].filter(Boolean)
     const guilty = tasks.filter((task) => {
       if (!task || typeof task !== 'object') return false

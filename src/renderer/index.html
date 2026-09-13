@@ -36,18 +36,15 @@
 
     <section id="settings" class="settings hidden">
       <label class="row">
-        <span>Modèle</span>
-        <select id="model">
-          <option value="claude-opus-5">Opus 5 — le plus fin</option>
-          <option value="claude-sonnet-5">Sonnet 5 — plus rapide</option>
-          <option value="claude-haiku-4-5">Haiku 4.5 — express</option>
-        </select>
+        <span>Serveur d'IA</span>
+        <input type="text" id="endpoint" spellcheck="false" placeholder="http://localhost:1234" />
       </label>
       <label class="row">
-        <span>Mode autonome</span>
-        <input type="checkbox" id="auto-todoist" />
+        <span>Modèle</span>
+        <select id="model"></select>
       </label>
-      <p class="note-inline">L'agent exécute et improvise sans rien te demander ; il annonce ses choix dans son résumé. Seule la suppression d'un projet, d'une section ou d'un libellé passe encore par toi. Décoche pour valider chaque action.</p>
+      <p class="note-inline">L'IA tourne sur ton serveur local : aucune requête ne part chez Anthropic. Todoist reste un service distant — c'est là que vivent tes tâches. Le socle pèse ~34 000 tokens : charge le modèle avec au moins 65 536 tokens de contexte dans LM Studio.</p>
+      <p class="note-inline">L'assistant n'attend jamais ton feu vert : il exécute, puis récapitule ce qu'il a fait. Un bouton <strong>Annuler</strong> sous le récap rejoue les modifications à l'envers. Les suppressions de projet, de section ou de libellé, et tout ce qui se passe hors de Todoist, sont signalés comme non annulables.</p>
       <button id="btn-workspace" class="link-btn">Ouvrir l'espace de travail…</button>
     </section>
 
