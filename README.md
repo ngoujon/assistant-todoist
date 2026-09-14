@@ -3,13 +3,10 @@
 Une petite app macOS qui ouvre un assistant conversationnel — un agent déguisé en fenêtre
 mignonne — spécialisé dans la planification de tes tâches, branché sur ton Todoist via MCP.
 
-**L'IA tourne en local.** Le moteur d'inférence est un LM Studio sur le réseau
-(`http://localhost:1234` par défaut, réglable) : aucune requête ne part chez Anthropic,
-et l'app ne demande aucun compte Claude. Seul Todoist reste un service distant — c'est là
-que vivent les tâches, il n'y a pas d'alternative hors ligne.
-
-Le harnais reste celui de Claude Code, lancé comme binaire local : mêmes capacités (Bash,
-fichiers, web, réglages système), plus les 47 outils Todoist.
+**C'est Claude qui réfléchit**, par le harnais Claude Code — exactement comme dans le
+terminal : le CLI embarqué se sert de la session Claude déjà ouverte sur la machine, sans
+clé API ni réglage à faire dans l'app. Mêmes capacités qu'en terminal (Bash, fichiers, web,
+réglages système), plus les 47 outils Todoist.
 
 ## Utilisation
 
@@ -96,9 +93,6 @@ qui se passe hors de Todoist (`Bash`, écriture de fichiers, réglages système)
 réordonnancement de masse, et toute action dont l'état d'avant n'était pas connu. Le bouton
 devient alors « Annuler ce qui peut l'être (n/m) ».
 
-L'app traduit aussi les pannes du serveur local : contexte trop court, modèle non chargé,
-serveur injoignable. Sans ça, une réponse qui n'arrive jamais ressemble à un bug.
-
 ## Écrire pendant qu'il travaille
 
 Le champ de saisie n'est jamais bloqué. Un message envoyé pendant un traitement est
@@ -129,7 +123,6 @@ src/agent/registry.mjs mémoire des objets Todoist croisés : noms, et état d'a
 src/agent/journal.mjs  ce qui a été fait dans le tour, et l'appel inverse de chaque action
 src/agent/summary.mjs  traduction d'une action exécutée en français lisible
 src/agent/impact.mjs   modèle avant/après d'un déplacement, avec chevauchements
-src/agent/local-model.mjs  pont vers le serveur d'IA local : compatibilité et erreurs lisibles
 src/renderer/          interface : chat, markdown maison, cartes d'outils, récap, schéma d'impact
 scripts/               icône, build, installation, prévisualisation, test d'intégration
 ```
@@ -139,10 +132,10 @@ Points clés :
 - **Claude Agent SDK** (`@anthropic-ai/claude-agent-sdk`) en mode *streaming input* :
   une seule session `query()` vit pendant toute la conversation, alimentée par une file
   d'attente asynchrone. Le binaire est embarqué dans le bundle et tourne en local.
-- **Inférence locale** : `ANTHROPIC_BASE_URL` pointe sur un pont interne
-  (`src/agent/local-model.mjs`) qui relaie vers LM Studio. Aucune clé API, aucun compte
-  Claude, et la télémétrie du CLI est coupée (`CLAUDE_CODE_DISABLE_NONESSENTIAL_TRAFFIC`,
-  `DISABLE_TELEMETRY`, `DISABLE_ERROR_REPORTING`, `DISABLE_AUTOUPDATER`).
+- **Authentification** : aucune. Le CLI réutilise la session Claude de la machine, celle
+  qui sert déjà en terminal — rien à saisir dans l'app, et l'usage se compte sur
+  l'abonnement. Une limite atteinte est annoncée dans la conversation (`rate_limit_event`)
+  plutôt que de laisser tourner le rond indéfiniment.
 - **MCP Todoist** déclaré explicitement (`strictMcpConfig`) pour n'exposer que Todoist,
   sans les autres serveurs MCP configurés sur la machine.
 - **Aucune permission** : `canUseTool` autorise tout. Le contrôle est déplacé en aval, dans
@@ -150,37 +143,6 @@ Points clés :
 - L'espace de travail de l'agent est
   `~/Library/Application Support/Assistant Todoist/Espace de travail`
   (accessible depuis les réglages).
-
-## Le serveur d'IA local
-
-LM Studio expose l'**API Messages d'Anthropic** sur `/v1/messages` — pas seulement l'API
-OpenAI — streaming SSE et blocs `tool_use` compris. C'est ce qui permet de garder le
-harnais Claude Code tel quel : il suffit de le faire pointer ailleurs.
-
-Deux écarts subsistent, traités par `src/agent/local-model.mjs` :
-
-- **Consignes système en cours de conversation.** Le CLI insère des messages
-  `role: "system"` au fil de l'échange ; le gabarit de chat de Qwen les refuse
-  (`System message must be at the beginning`). Le pont les replie en messages
-  utilisateur préfixés `[consigne système]`.
-- **Erreurs illisibles.** Le moteur renvoie du JSON imbriqué sur trois niveaux. Le pont
-  en extrait une phrase actionnable, affichée dans la conversation.
-
-**Contexte requis.** Le socle du CLI pèse ~17 800 tokens à vide, et ~34 300 une fois les
-47 outils Todoist déclarés — avant la moindre question. Charge le modèle avec **65 536
-tokens de contexte au minimum** dans LM Studio (réglage *Context Length* au chargement,
-ou `lms load --context-length 65536`) ; en dessous, chaque requête échoue. Ce réglage
-n'est pas pilotable à distance : LM Studio n'expose pas d'endpoint de chargement.
-
-L'app le vérifie d'elle-même au démarrage : elle lit `/api/v0/models`, compare le
-`loaded_context_length` à ce qu'elle demande, et le dit en une phrase si c'est trop court
-ou si le modèle réglé n'est pas servi — plutôt que de laisser le CLI enchaîner dix
-tentatives sur une erreur 500 illisible.
-
-Le modèle et l'adresse du serveur se changent dans les réglages ⚙ ; la liste déroulante
-est peuplée par ce que `/v1/models` annonce réellement. Une config écrite par une version
-antérieure de l'app, qui épinglait `claude-opus-5`, est ramenée aux réglages locaux au
-démarrage : sinon l'ancien choix continuait de décider.
 
 ## Développement
 
@@ -221,6 +183,9 @@ sur Apple Silicon : `scripts/build-app.sh` s'en charge.
 - L'occupation de l'agent ne peut pas se compter en envois : deux messages peuvent être
   fondus dans un seul tour, donc un seul `result`. Elle suit son activité réelle.
 - `init` peut arriver plusieurs fois dans une session — dédupliquer les notes qui en dépendent.
+- La config enregistrée est étalée **par-dessus** les valeurs par défaut : un réglage écrit
+  par une version antérieure survit à la mise à jour et décide à leur place. `migrateConfig`
+  ramène tout nom de modèle non-Claude au défaut et jette les clés devenues mortes.
 - Faire valider les décisions de l'agent coûtait un aller-retour au clavier à chaque
   demande. Le contrôle est passé **après** l'exécution : il tranche, il fait, l'app
   récapitule et sait défaire. Une carte qui arrive quand tout est déjà fait se lit en

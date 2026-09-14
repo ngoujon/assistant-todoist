@@ -7,7 +7,6 @@ contextBridge.exposeInMainWorld('assistant', {
   newChat: () => ipcRenderer.send('chat:new'),
   setConfig: (patch) => ipcRenderer.send('chat:config', patch),
   undo: (recapId) => ipcRenderer.invoke('chat:undo', recapId),
-  models: () => ipcRenderer.invoke('app:models'),
   openWorkspace: () => ipcRenderer.send('app:open-workspace'),
   openExternal: (url) => ipcRenderer.send('app:open-external', url),
   onEvent: (cb) => {

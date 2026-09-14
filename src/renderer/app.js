@@ -9,7 +9,6 @@ const sendBtn = document.getElementById('btn-send')
 const statusLine = document.getElementById('status-line')
 const settingsPanel = document.getElementById('settings')
 const modelSelect = document.getElementById('model')
-const endpointInput = document.getElementById('endpoint')
 
 let busy = false
 let currentText = null // { el, raw }
@@ -417,32 +416,6 @@ document.getElementById('btn-workspace').addEventListener('click', () => api.ope
 
 modelSelect.addEventListener('change', () => api.setConfig({ model: modelSelect.value }))
 
-// L'adresse ne se valide qu'une fois la saisie finie : sinon on redémarrerait la
-// session à chaque caractère tapé.
-endpointInput.addEventListener('change', async () => {
-  const endpoint = endpointInput.value.trim()
-  if (!endpoint) return
-  api.setConfig({ endpoint })
-  await refreshModels(modelSelect.value)
-})
-
-/** Peuple la liste avec ce que le serveur local sert vraiment. */
-async function refreshModels(preferred) {
-  const { models, error } = await api.models()
-  modelSelect.replaceChildren()
-  if (!models.length) {
-    const opt = el('option', null, preferred || 'aucun modèle joignable')
-    if (preferred) opt.value = preferred
-    modelSelect.appendChild(opt)
-    modelSelect.title = error ? `Serveur injoignable : ${error}` : ''
-    return
-  }
-  for (const id of models) modelSelect.appendChild(Object.assign(el('option', null, id), { value: id }))
-  modelSelect.title = ''
-  modelSelect.value = models.includes(preferred) ? preferred : models[0]
-  if (modelSelect.value !== preferred) api.setConfig({ model: modelSelect.value })
-}
-
 document.addEventListener('click', (e) => {
   const link = e.target.closest('a[data-ext]')
   if (!link) return
@@ -527,8 +500,7 @@ api.onEvent((evt) => {
 // ---------------------------------------------------------------- demarrage
 
 const state = await api.init()
-endpointInput.value = state.config.endpoint || ''
-await refreshModels(state.config.model)
+modelSelect.value = state.config.model
 showWelcome()
 setBusy(false)
 input.focus()

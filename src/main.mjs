@@ -5,20 +5,13 @@ import os from 'node:os'
 import { fileURLToPath } from 'node:url'
 import { AgentSession } from './agent/session.mjs'
 import { PROMPT_VERSION } from './agent/prompt.mjs'
-import { listLocalModels } from './agent/local-model.mjs'
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url))
 
 const DEFAULT_CONFIG = {
-  // Serveur d'inférence local : l'app ne dépend plus d'un compte Claude ni de l'API
-  // Anthropic. Seul Todoist reste un service distant — c'est là que vivent les tâches.
-  endpoint: 'http://localhost:1234',
-  model: 'qwen/qwen3.8-27b',
-  /**
-   * Contexte réellement chargé dans LM Studio. Le socle du CLI (outils Todoist compris)
-   * pèse à lui seul ~34 000 tokens : en dessous de 65 536, la moindre question échoue.
-   */
-  contextTokens: 65536,
+  // L'IA, c'est Claude, par le harnais Claude Code — exactement comme dans le terminal :
+  // le CLI se sert de la session déjà ouverte sur la machine, sans clé API à gérer ici.
+  model: 'claude-opus-5',
   bounds: { width: 470, height: 780 },
   lastSessionId: null,
   promptVersion: 0,
@@ -44,25 +37,24 @@ function loadConfig() {
 }
 
 /**
- * Une config écrite par une version antérieure épingle un modèle Anthropic
- * (`claude-opus-5`) et ignore le serveur local : elle écrase alors les valeurs par
- * défaut et l'app redemande un modèle que LM Studio ne sert pas. On la ramène aux
- * réglages locaux plutôt que de laisser l'ancien choix décider.
+ * `loadConfig` étale le fichier enregistré par-dessus `DEFAULT_CONFIG` : les réglages
+ * de la parenthèse « modèle local » (nom de modèle LM Studio, adresse de serveur,
+ * taille de contexte) survivraient à la mise à jour et l'app demanderait à Claude un
+ * modèle qui n'existe pas. On les retire plutôt que de laisser l'ancien choix décider.
  */
 function migrateConfig() {
   let changed = false
-  if (/^claude[-.]/i.test(String(config.model || ''))) {
+  if (!/^claude[-.]/i.test(String(config.model || ''))) {
     config.model = DEFAULT_CONFIG.model
     changed = true
   }
-  if (!config.endpoint) {
-    config.endpoint = DEFAULT_CONFIG.endpoint
-    changed = true
-  }
-  // Réglage d'un mode autonome qui n'existe plus : plus rien ne passe par une validation.
-  if ('autoTodoist' in config) {
-    delete config.autoTodoist
-    changed = true
+  // Réglages d'une époque où l'inférence tournait sur un serveur local, et d'un mode
+  // autonome qui n'existe plus : plus rien ne les lit.
+  for (const clef of ['endpoint', 'contextTokens', 'autoTodoist']) {
+    if (clef in config) {
+      delete config[clef]
+      changed = true
+    }
   }
   if (changed) saveConfig()
 }
@@ -197,7 +189,7 @@ function wireIpc() {
   ipcMain.handle('app:init', () => {
     setImmediate(flushEvents)
     return {
-      config: { model: config.model, endpoint: config.endpoint, contextTokens: config.contextTokens },
+      config: { model: config.model },
       workspace,
       version: app.getVersion(),
     }
@@ -217,21 +209,9 @@ function wireIpc() {
   })
 
   ipcMain.on('chat:config', (_e, patch) => {
-    const endpointChanged = patch.endpoint && patch.endpoint !== config.endpoint
     Object.assign(config, patch)
     saveConfig()
     if (patch.model) session.setModel(patch.model)
-    // Changer de serveur veut dire changer d'adaptateur : la session repart dessus.
-    if (endpointChanged) session.start({})
-  })
-
-  // Les modèles proposés sont ceux que le serveur local sert réellement.
-  ipcMain.handle('app:models', async () => {
-    try {
-      return { models: await listLocalModels(config.endpoint) }
-    } catch (err) {
-      return { models: [], error: String(err?.message || err) }
-    }
   })
 
   // Le récap donne l'identifiant ; la session sait quels appels inverses rejouer.

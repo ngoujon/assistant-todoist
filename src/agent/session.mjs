@@ -7,7 +7,6 @@ import { buildSystemPrompt } from './prompt.mjs'
 import { TodoistGuard } from './guards.mjs'
 import { TaskRegistry } from './registry.mjs'
 import { ActionJournal } from './journal.mjs'
-import { startLocalBridge, checkLocalModel } from './local-model.mjs'
 
 const HOME = os.homedir()
 const require = createRequire(import.meta.url)
@@ -107,12 +106,6 @@ export class AgentSession {
     this.recentUserText = []
     /** Messages envoyes mais pas encore aboutis : rejoues si la session redemarre. */
     this.unanswered = []
-    /** Adaptateur vers le serveur d'IA local (voir local-model.mjs). */
-    this.bridge = null
-    this.bridgeUrl = null
-    this.bridgeEndpoint = null
-    this.bridgePromise = null
-    this.pendingStart = null
   }
 
   get running() { return this.q !== null }
@@ -120,16 +113,12 @@ export class AgentSession {
   buildOptions(resume) {
     const cfg = this.getConfig()
     const claudeBin = resolveClaudeExecutable()
-    // Filet de sécurité : sans adresse d'adaptateur, le CLI retomberait sur
-    // api.anthropic.com et consommerait le compte Claude de l’utilisateur. Mieux vaut
-    // ne pas démarrer du tout.
-    if (!this.bridgeUrl) throw new Error("Adaptateur local absent : la session n'est pas lancée.")
     return {
       cwd: this.workspace,
       additionalDirectories: [HOME],
       model: cfg.model,
-      // `effort` et `thinking` sont propres aux modèles Anthropic : un moteur local
-      // les ignore au mieux, les refuse au pire.
+      effort: 'high',
+      thinking: { type: 'adaptive', display: 'summarized' },
       systemPrompt: {
         type: 'preset',
         preset: 'claude_code',
@@ -152,61 +141,12 @@ export class AgentSession {
         ...process.env,
         PATH: [...new Set([...EXTRA_PATH, ...(process.env.PATH || '').split(':')])].filter(Boolean).join(':'),
         CLAUDE_AGENT_SDK_CLIENT_APP: 'assistant-todoist/1.0.0',
-        // L'inférence part vers le serveur local, via l'adaptateur : plus une requête
-        // vers Anthropic, et plus besoin d'un compte Claude pour que l'app tourne.
-        ANTHROPIC_BASE_URL: this.bridgeUrl,
-        ANTHROPIC_AUTH_TOKEN: 'local',
-        ANTHROPIC_API_KEY: '',
-        ANTHROPIC_MODEL: cfg.model,
-        ANTHROPIC_SMALL_FAST_MODEL: cfg.model,
-        ANTHROPIC_DEFAULT_HAIKU_MODEL: cfg.model,
-        // Le modèle local est inconnu du CLI : sans ça il suppose 200 k et compacte de travers.
-        CLAUDE_CODE_MAX_CONTEXT_TOKENS: String(cfg.contextTokens || 65536),
-        // Rien ne doit partir vers Anthropic, pas même un ping de télémétrie.
-        CLAUDE_CODE_DISABLE_NONESSENTIAL_TRAFFIC: '1',
-        DISABLE_TELEMETRY: '1',
-        DISABLE_ERROR_REPORTING: '1',
-        DISABLE_AUTOUPDATER: '1',
-        DISABLE_BUG_COMMAND: '1',
       },
       ...(claudeBin ? { pathToClaudeCodeExecutable: claudeBin } : {}),
       stderr: (d) => { if (process.env.ASSISTANT_DEBUG) process.stderr.write(`[claude] ${d}`) },
       // Tout est autorisé : le contrôle se fait après coup, par le récap et son « Annuler ».
       canUseTool: async (_toolName, input) => ({ behavior: 'allow', updatedInput: input }),
     }
-  }
-
-  /**
-   * Ouvre l'adaptateur vers le serveur d'IA local. Le CLI ne parle qu'à lui : il traduit
-   * ce que le moteur local ne sait pas avaler, et traduit ses erreurs en français.
-   */
-  ensureBridge() {
-    const endpoint = this.getConfig().endpoint
-    if (this.bridge && this.bridgeEndpoint === endpoint) return Promise.resolve()
-    // Deux appels rapprochés ouvriraient deux adaptateurs, et diraient deux fois la
-    // même chose sur le modèle local.
-    if (!this.bridgePromise || this.bridgeEndpoint !== endpoint) {
-      this.bridgePromise = this.openBridge(endpoint).finally(() => { this.bridgePromise = null })
-    }
-    return this.bridgePromise
-  }
-
-  async openBridge(endpoint) {
-    const { model, contextTokens } = this.getConfig()
-    try { this.bridge?.close() } catch {}
-    this.bridge = await startLocalBridge({
-      upstream: endpoint,
-      // Le CLI réessaie jusqu'à dix fois : sans ce filtre, la même panne s'écrirait
-      // dix fois de suite dans la conversation.
-      onNote: (message) => this.noteOnce(message),
-    })
-    this.bridgeEndpoint = endpoint
-    this.bridgeUrl = this.bridge.url
-    // Modèle absent ou chargé trop court : le dire tout de suite, pas au bout de dix
-    // tentatives ratées sur la première question.
-    checkLocalModel(endpoint, model, contextTokens || 65536)
-      .then((warning) => { if (warning) this.noteOnce(warning) })
-      .catch(() => {})
   }
 
   /** N'écrit une panne qu'une fois par minute : les tentatives répètent la même. */
@@ -229,24 +169,6 @@ export class AgentSession {
     this.guard = new TodoistGuard(this.registry, () => this.recentUserText.join(' '))
     // Les appels en vol sont perdus par le redémarrage ; les récaps déjà rendus restent annulables.
     this.journal.reset()
-    if (!this.bridgeUrl) {
-      // L'adaptateur n'est pas encore prêt : on relance dès qu'il l'est, en emportant
-      // ce qui a été écrit entre-temps. Sans ça, un message envoyé pendant ce court
-      // instant tombait dans le vide et l'agent attendait une question qui n'arrivait
-      // jamais — exactement ce qu'on voit au tout premier lancement.
-      this.pendingStart = { resume, replay }
-      this.ensureBridge().then(() => {
-        const pending = this.pendingStart
-        this.pendingStart = null
-        if (!pending) return
-        const queued = [...new Set([...(pending.replay || []), ...this.unanswered])]
-        this.start({ resume: pending.resume, replay: queued })
-      }).catch((err) => {
-        this.emit({ k: 'error', message: `Adaptateur local indisponible : ${String(err?.message || err)}` })
-        this.emit({ k: 'status', state: 'idle' })
-      })
-      return
-    }
     this.q = query({ prompt: this.queue, options: this.buildOptions(resume) })
     this.emit({ k: 'status', state: 'connecting' })
     this.pump()
@@ -297,7 +219,6 @@ export class AgentSession {
 
   stop() {
     clearTimeout(this.readyTimer)
-    this.pendingStart = null
     try { this.queue?.close() } catch {}
     try { this.abort?.abort() } catch {}
     this.q = null
@@ -310,18 +231,13 @@ export class AgentSession {
    * @param {{fromUser?: boolean}} [opts] une consigne d'annulation n'est pas une demande
    *   de l’utilisateur : elle ne doit pas peser sur les garde-fous qui lisent ses mots.
    */
-  /** Ferme l'adaptateur : à la fermeture de l'app seulement, il survit aux redémarrages de session. */
+  /** Arrête l'agent à la fermeture de l'app. */
   dispose() {
     this.stop()
-    try { this.bridge?.close() } catch {}
-    this.bridge = null
-    this.bridgeUrl = null
   }
 
   send(text, { fromUser = true } = {}) {
-    // Une session déjà en cours d'ouverture ne se relance pas : elle rejouera ce
-    // message d'elle-même dès que l'adaptateur local répond.
-    if (!this.q && !this.pendingStart) this.start({})
+    if (!this.q) this.start({})
     this.markBusy()
     if (fromUser) {
       this.recentUserText.unshift(text)
@@ -335,9 +251,7 @@ export class AgentSession {
       session_id: this.sessionId || '',
     }
     this.unanswered.push(message)
-    // La file n'existe pas tant que l'adaptateur démarre : le message part alors
-    // avec le replay, à l'ouverture de la session.
-    this.queue?.push(message)
+    this.queue.push(message)
     if (!this.sessionId) this.armReadyWatchdog()
   }
 
@@ -468,9 +382,21 @@ export class AgentSession {
         break
       }
 
-      // Le CLI émet encore `rate_limit_event`, hérité de l'API Anthropic : il ne veut
-      // plus rien dire face à un moteur local, et annoncer une « limite d'usage Claude »
-      // ferait croire que l'app appelle encore Anthropic. On l'ignore.
+      case 'rate_limit_event': {
+        // Une limite d'usage atteinte se traduit par des reponses qui n'arrivent
+        // jamais : autant le dire plutot que de laisser tourner le rond.
+        const info = msg.rate_limit_info || {}
+        if (info.status === this.lastRateStatus) break
+        this.lastRateStatus = info.status
+        if (info.status === 'rejected') {
+          const at = info.resetsAt ? new Date(info.resetsAt * 1000).toLocaleTimeString('fr-FR', { hour: '2-digit', minute: '2-digit' }) : null
+          this.emit({ k: 'error', message: `Limite d'usage Claude atteinte${at ? ` — ça repart vers ${at}` : ''}.` })
+        } else if (info.status === 'allowed_warning') {
+          const pct = info.utilization != null ? ` (${Math.round(info.utilization * 100)} %)` : ''
+          this.emit({ k: 'note', text: `Tu approches la limite d'usage Claude${pct}.` })
+        }
+        break
+      }
 
       case 'result': {
         this.unanswered = []
