@@ -22,7 +22,9 @@ const session = new AgentSession({
     if (e.k === 'error') console.log('ERREUR ', e.message)
     if (e.k === 'result') seen.done = true
   },
-  getConfig: () => ({ model: 'claude-sonnet-5' }),
+  // Le test doit taper sur le moteur local, comme l'app : un nom de modele
+  // Anthropic ici consommerait le compte Claude alors que plus rien ne l'utilise.
+  getConfig: () => ({ endpoint: 'http://localhost:1234', model: 'qwen/qwen3.8-27b', contextTokens: 65536 }),
   workspace,
 })
 

@@ -40,6 +40,31 @@ function loadConfig() {
   } catch {
     config = { ...DEFAULT_CONFIG }
   }
+  migrateConfig()
+}
+
+/**
+ * Une config écrite par une version antérieure épingle un modèle Anthropic
+ * (`claude-opus-5`) et ignore le serveur local : elle écrase alors les valeurs par
+ * défaut et l'app redemande un modèle que LM Studio ne sert pas. On la ramène aux
+ * réglages locaux plutôt que de laisser l'ancien choix décider.
+ */
+function migrateConfig() {
+  let changed = false
+  if (/^claude[-.]/i.test(String(config.model || ''))) {
+    config.model = DEFAULT_CONFIG.model
+    changed = true
+  }
+  if (!config.endpoint) {
+    config.endpoint = DEFAULT_CONFIG.endpoint
+    changed = true
+  }
+  // Réglage d'un mode autonome qui n'existe plus : plus rien ne passe par une validation.
+  if ('autoTodoist' in config) {
+    delete config.autoTodoist
+    changed = true
+  }
+  if (changed) saveConfig()
 }
 
 let saveTimer = null

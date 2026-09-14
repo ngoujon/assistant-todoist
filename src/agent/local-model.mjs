@@ -120,6 +120,42 @@ export function startLocalBridge({ upstream, onNote }) {
   })
 }
 
+/**
+ * Vérifie, avant la première question, que le modèle réglé est bien chargé et avec
+ * assez de contexte. LM Studio l'annonce sur `/api/v0/models` : autant le lire que de
+ * laisser l'agent enchaîner dix tentatives ratées sur une erreur 500.
+ * @returns {Promise<string|null>} la phrase à afficher, ou null si tout va bien.
+ */
+export async function checkLocalModel(upstream, modelId, neededTokens) {
+  const base = String(upstream || '').replace(/\/+$/, '')
+  let entry
+  try {
+    const res = await fetch(`${base}/api/v0/models`, { signal: AbortSignal.timeout(6000) })
+    if (!res.ok) return null
+    const data = await res.json()
+    entry = (data?.data || []).find((m) => m?.id === modelId)
+  } catch {
+    // Serveur muet ou API absente : l'erreur remontera d'elle-même à la première requête.
+    return null
+  }
+
+  if (!entry) {
+    return `Le modèle « ${modelId} » n'est pas servi par ${base}. Choisis-en un autre dans les réglages ⚙.`
+  }
+  const loaded = Number(entry.loaded_context_length || 0)
+  if (entry.state !== 'loaded') {
+    return `Le modèle « ${modelId} » n'est pas chargé dans LM Studio — la première question risque d'échouer.`
+  }
+  if (loaded && neededTokens && loaded < neededTokens) {
+    const max = Number(entry.max_context_length || 0)
+    return `Le modèle est chargé avec ${loaded.toLocaleString('fr-FR')} tokens de contexte, ` +
+      `mais l'assistant en demande ${Number(neededTokens).toLocaleString('fr-FR')} (les 47 outils Todoist pèsent à eux seuls ~34 000). ` +
+      `Dans LM Studio, recharge « ${modelId} » avec au moins ${Number(neededTokens).toLocaleString('fr-FR')} tokens` +
+      `${max ? ` (il en accepte ${max.toLocaleString('fr-FR')})` : ''}.`
+  }
+  return null
+}
+
 /** Liste les modèles servis par le serveur local, pour peupler les réglages. */
 export async function listLocalModels(upstream) {
   const base = String(upstream || '').replace(/\/+$/, '')

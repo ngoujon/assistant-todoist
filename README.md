@@ -172,8 +172,15 @@ tokens de contexte au minimum** dans LM Studio (réglage *Context Length* au cha
 ou `lms load --context-length 65536`) ; en dessous, chaque requête échoue. Ce réglage
 n'est pas pilotable à distance : LM Studio n'expose pas d'endpoint de chargement.
 
+L'app le vérifie d'elle-même au démarrage : elle lit `/api/v0/models`, compare le
+`loaded_context_length` à ce qu'elle demande, et le dit en une phrase si c'est trop court
+ou si le modèle réglé n'est pas servi — plutôt que de laisser le CLI enchaîner dix
+tentatives sur une erreur 500 illisible.
+
 Le modèle et l'adresse du serveur se changent dans les réglages ⚙ ; la liste déroulante
-est peuplée par ce que `/v1/models` annonce réellement.
+est peuplée par ce que `/v1/models` annonce réellement. Une config écrite par une version
+antérieure de l'app, qui épinglait `claude-opus-5`, est ramenée aux réglages locaux au
+démarrage : sinon l'ancien choix continuait de décider.
 
 ## Développement
 
