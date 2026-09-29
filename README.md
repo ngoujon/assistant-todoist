@@ -8,6 +8,14 @@ terminal : le CLI embarqué se sert de la session Claude déjà ouverte sur la m
 clé API ni réglage à faire dans l'app. Mêmes capacités qu'en terminal (Bash, fichiers, web,
 réglages système), plus les 47 outils Todoist.
 
+## Aperçu
+
+*Conversation de démonstration rejouée par `npm run preview` : tâches et projets fictifs.*
+
+| Clair | Sombre |
+| --- | --- |
+| ![Thème clair](docs/screenshots/light.png) | ![Thème sombre](docs/screenshots/dark.png) |
+
 ## Utilisation
 
 L'app est installée dans `/Applications/Assistant Todoist.app` et épinglée au Dock.
