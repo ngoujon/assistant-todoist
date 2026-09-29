@@ -29,7 +29,7 @@ const SCRIPT: Step[] = [
     },
   },
   { evt: { k: 'result', isError: false, text: '', costUsd: 0.03, durationMs: 6400 } },
-  { user: 'p2, 30 min, décale Tâche B à demain 9h, ponctuel' },
+  { user: 'p2, 30 min, décale la tâche B à demain 9h, ponctuel' },
   { evt: { k: 'tool-use', id: 't2', name: 'mcp__todoist__reschedule-tasks', input: { tasks: [{ id: 'A', date: '2026-08-31T09:45:00' }] } } },
   { evt: { k: 'tool-result', id: 't2', name: 'mcp__todoist__reschedule-tasks', ok: true, preview: 'ok' } },
   { evt: { k: 'text-start' } },
@@ -152,7 +152,7 @@ void app.whenReady().then(async () => {
   await win.webContents.executeJavaScript(`(() => {
     window.assistant._fire({ k: 'status', state: 'thinking' })
     const box = document.getElementById('input')
-    box.value = 'et ajoute aussi le tâche R'
+    box.value = 'et ajoute aussi la tâche F'
     box.dispatchEvent(new Event('input'))
     document.getElementById('btn-send').click()
   })()`)

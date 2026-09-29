@@ -14,6 +14,11 @@ interface AppConfig {
   bounds: { width: number, height: number, x?: number, y?: number }
   lastSessionId: string | null
   promptVersion: number
+  /**
+   * Libellés que l'agent ne doit jamais appliquer (`ancien-*` accepté). Propres au compte :
+   * ils vivent dans config.json, sur la machine, jamais dans le dépôt.
+   */
+  ignoredLabels: string[]
 }
 
 const DEFAULT_CONFIG: AppConfig = {
@@ -23,6 +28,7 @@ const DEFAULT_CONFIG: AppConfig = {
   bounds: { width: 470, height: 780 },
   lastSessionId: null,
   promptVersion: 0,
+  ignoredLabels: [],
 }
 
 let config: AppConfig = { ...DEFAULT_CONFIG }
@@ -65,6 +71,10 @@ function migrateConfig(): void {
       changed = true
     }
   }
+  if (!Array.isArray(config.ignoredLabels)) {
+    config.ignoredLabels = []
+    changed = true
+  }
   if (changed) saveConfig()
 }
 
@@ -103,6 +113,18 @@ function saveTasksSnapshot(): void {
       registry.dirty = false
     } catch {}
   }, 500)
+}
+
+/**
+ * Consignes propres au compte (libellés, conventions) : un fichier local, ajouté tel
+ * quel au prompt. Le code reste générique, rien de personnel ne part dans le dépôt.
+ */
+function readPersonalNotes(): string {
+  try {
+    return fs.readFileSync(path.join(app.getPath('userData'), 'consignes.md'), 'utf8')
+  } catch {
+    return ''
+  }
 }
 
 function ensureWorkspace(): void {
@@ -315,7 +337,7 @@ if (!app.requestSingleInstanceLock()) {
         if (evt.k === 'result') saveTasksSnapshot()
         emit(evt)
       },
-      getConfig: () => config,
+      getConfig: () => ({ ...config, personalNotes: readPersonalNotes() }),
       workspace,
       tasksSnapshot: loadTasksSnapshot(),
     })

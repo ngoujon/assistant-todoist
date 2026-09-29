@@ -7,8 +7,6 @@ import type { HookCallbackMatcher, HookEvent, HookJSONOutput } from '@anthropic-
 import { asRecord, toolInput, type TaskInput, type ToolInput } from './json.ts'
 import type { TaskRegistry } from './registry.ts'
 
-const OBSOLETE_LABEL = /^ancien-/i
-const TYPO_LABELS = new Set(['coquille'])
 
 const DECIDE_INSTRUCTIONS =
   'Ne pose aucune question à l’utilisateur : choisis toi-même la valeur la plus raisonnable, ' +
@@ -30,9 +28,22 @@ export class TodoistGuard {
    */
   suspended = false
 
-  constructor(registry: TaskRegistry | null, getUserText?: () => string) {
+  /** Libellés à ne jamais appliquer : réglage local, propre au compte. */
+  ignoredLabels: string[]
+
+  constructor(registry: TaskRegistry | null, getUserText?: () => string, ignoredLabels: string[] = []) {
     this.registry = registry
     this.getUserText = getUserText || (() => '')
+    this.ignoredLabels = ignoredLabels
+  }
+
+  /** `ancien-*` couvre tout ce qui commence par « ancien- » ; sans `*`, le nom exact. */
+  isIgnored(label: string): boolean {
+    const name = label.toLowerCase()
+    return this.ignoredLabels.some((pattern) => {
+      const p = pattern.toLowerCase()
+      return p.endsWith('*') ? name.startsWith(p.slice(0, -1)) : name === p
+    })
   }
 
   suspend(): void { this.suspended = true }
@@ -108,10 +119,10 @@ export class TodoistGuard {
       if (!labels.length) {
         missing.push('au moins un libellé @ existant')
       } else {
-        const stale = labels.filter((l) => OBSOLETE_LABEL.test(l) || TYPO_LABELS.has(l.toLowerCase()))
+        const stale = labels.filter((l) => this.isIgnored(l))
         const unknown = labels.filter((l) => !knownLabels.has(l.toLowerCase()))
         if (stale.length) {
-          problems.push(`« ${name} » : le libellé ${stale.map((l) => `@${l}`).join(', ')} est obsolète, choisis-en un actif.`)
+          problems.push(`« ${name} » : le libellé ${stale.map((l) => `@${l}`).join(', ')} est à ignorer, choisis-en un actif.`)
         }
         const trulyUnknown = unknown.filter((l) => !stale.includes(l))
         if (trulyUnknown.length) {

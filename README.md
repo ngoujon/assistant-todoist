@@ -57,8 +57,8 @@ Autres garanties :
 - **Priorités** : `p1` urgent · `p2` important · `p3` à faire · `p4` un jour. Todoist n'a
   que ces quatre niveaux (pas de `p0`, le maximum est `p1`).
 - **Libellés** : il appelle `find-labels`, n'applique que des libellés **existants**, ignore
-  les `ancien-*` et la coquille `coquille`, et n'en crée aucun — au pire il prend le plus proche
-  et le signale. Le hook rejette tout libellé inconnu.
+  ceux que tu as écartés dans tes réglages locaux (voir plus bas), et n'en crée aucun — au
+  pire il prend le plus proche et le signale. Le hook rejette tout libellé inconnu.
 - **Récurrence** : appliquée en langage naturel si elle est précisée, choisie par lui si
   elle est vague. Le hook refuse `update-tasks` avec une date **sur une tâche récurrente**
   (ça écraserait la récurrence) et renvoie vers `reschedule-tasks`.
@@ -66,6 +66,18 @@ Autres garanties :
   `dueString` est le seul moyen de dater une tâche qui n'en a pas.
 - **Tâches sans date** : une tâche `p4` — ou demandée « sans date », « backlog », « un
   jour » — se crée sans échéance ; le hook ne l'exige que pour le reste.
+
+## Réglages propres à ton compte
+
+Le code ne contient **rien** de ton Todoist : aucun libellé, aucune tâche, aucun projet.
+Ce qui est propre à ton compte vit sur ta machine, dans
+`~/Library/Application Support/Assistant Todoist/`, jamais dans le dépôt :
+
+- `config.json`, clé `ignoredLabels` : libellés que l'agent ne doit jamais appliquer.
+  Un `*` final vaut préfixe : `["ancien-*", "coquille"]`.
+- `consignes.md` (facultatif) : tes conventions en texte libre — tes libellés et quand les
+  cumuler, tes habitudes d'horaires… Le fichier est ajouté tel quel au prompt, relu à
+  chaque nouvelle session.
 
 ## Le récap et son « Annuler »
 

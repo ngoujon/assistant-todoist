@@ -7,7 +7,7 @@ r.note(JSON.stringify({ tasks: [
   { id: 'A', content: 'Tâche A', dueDate: '2026-08-29T09:30:00', duration: '15m' },
   { id: 'B', content: 'Tâche B', dueDate: '2026-08-31T09:00:00', duration: '2h' },
   { id: 'C', content: 'Tâche C', dueDate: '2026-08-31T11:00:00', duration: '45m' },
-  { id: 'D', content: 'Tâche R', dueDate: '2026-08-31' },
+  { id: 'D', content: 'Tâche D', dueDate: '2026-08-31' },
 ] }))
 
 const impact = buildImpact('mcp__todoist__reschedule-tasks', { tasks: [{ id: 'A', date: '2026-08-31T09:45:00' }] }, r)

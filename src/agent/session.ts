@@ -81,6 +81,10 @@ function createInputQueue(): InputQueue {
 
 export interface SessionConfig {
   model: string
+  /** Libellés à ne jamais appliquer (motifs `ancien-*` acceptés). */
+  ignoredLabels?: string[]
+  /** Consignes propres au compte, ajoutées au prompt. */
+  personalNotes?: string
 }
 
 export interface SessionDeps {
@@ -131,8 +135,12 @@ export class AgentSession {
     // reprise afficherait « tâche a1B2 » au lieu du nom dans le récap — et surtout
     // n'aurait plus l'état d'avant qu'exige « Annuler ».
     this.registry = new TaskRegistry(tasksSnapshot)
-    this.guard = new TodoistGuard(this.registry, () => this.recentUserText.join(' '))
+    this.guard = this.createGuard()
     this.journal = new ActionJournal(this.registry)
+  }
+
+  createGuard(): TodoistGuard {
+    return new TodoistGuard(this.registry, () => this.recentUserText.join(' '), this.getConfig().ignoredLabels)
   }
 
   get running(): boolean { return this.q !== null }
@@ -152,6 +160,8 @@ export class AgentSession {
         append: buildSystemPrompt({
           workspace: this.workspace,
           timezone: Intl.DateTimeFormat().resolvedOptions().timeZone,
+          ignoredLabels: cfg.ignoredLabels,
+          personalNotes: cfg.personalNotes,
         }),
       },
       tools: ['Bash', 'Read', 'Write', 'Edit', 'Glob', 'Grep', 'WebSearch', 'WebFetch', 'TodoWrite', 'Task'],
@@ -193,7 +203,7 @@ export class AgentSession {
     this.resumeId = resume || null
     this.resumeNotified = false
     this.streamedMessages = new Set()
-    this.guard = new TodoistGuard(this.registry, () => this.recentUserText.join(' '))
+    this.guard = this.createGuard()
     // Les appels en vol sont perdus par le redémarrage ; les récaps déjà rendus restent annulables.
     this.journal.reset()
     const queue = this.queue

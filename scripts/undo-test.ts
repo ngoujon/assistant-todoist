@@ -7,7 +7,7 @@ import type { ToolInput } from '../src/agent/json.ts'
 const registry = new TaskRegistry()
 registry.note(JSON.stringify({ tasks: [
   { id: 'A', content: 'Tâche A', priority: 2, labels: ['libellé-1'], duration: { amount: 30, unit: 'minute' }, projectId: 'P1' },
-  { id: 'D', content: 'Tâche B', due: { date: '2026-09-08T14:00:00' }, priority: 3, labels: ['libellé-3'], duration: { amount: 120, unit: 'minute' }, projectId: 'P1' },
+  { id: 'D', content: 'Tâche D', due: { date: '2026-09-08T14:00:00' }, priority: 3, labels: ['libellé-2'], duration: { amount: 120, unit: 'minute' }, projectId: 'P1' },
   { id: 'R', content: 'Tâche R', due: { date: '2026-09-07T09:00:00', string: 'tous les mardis à 10h', isRecurring: true } },
 ] }))
 
@@ -83,8 +83,8 @@ console.log(`${suspended === null ? 'ok  ' : 'ECHEC'} en veille (annulation) -> 
 if (suspended !== null) ko++
 
 console.log('\n--- création sans date ---')
-const base = { content: 'Backlog', priority: 'p3', duration: '30m', labels: ['libellé-2'] }
-guard.knownLabels = new Set(['libellé-2'])
+const base = { content: 'Tâche S', priority: 'p3', duration: '30m', labels: ['libellé-1'] }
+guard.knownLabels = new Set(['libellé-1', 'ancien-x', 'coquille'])
 const blocked = guard.checkAddTasks({ tasks: [base] })
 userText = 'ajoute ca sans date, on verra plus tard'
 const allowedByText = guard.checkAddTasks({ tasks: [base] })
@@ -96,6 +96,21 @@ console.log(`${allowedByP4 === null ? 'ok  ' : 'ECHEC'} p4 (réservoir)         
 if (!blocked) ko++
 if (allowedByText !== null) ko++
 if (allowedByP4 !== null) ko++
+
+console.log('\n--- libellés à ignorer (réglage local) ---')
+const picky = new TodoistGuard(registry, () => '', ['ancien-*', 'coquille'])
+picky.knownLabels = new Set(['libellé-1', 'ancien-x', 'coquille'])
+// p4 : aucune date exigée, seul le libellé compte ici.
+const reservoir = { ...base, priority: 'p4' }
+const byPrefix = picky.checkAddTasks({ tasks: [{ ...reservoir, labels: ['ancien-x'] }] })
+const byName = picky.checkAddTasks({ tasks: [{ ...reservoir, labels: ['coquille'] }] })
+const allowed = picky.checkAddTasks({ tasks: [reservoir] })
+console.log(`${byPrefix ? 'ok  ' : 'ECHEC'} motif « ancien-* »          -> ${byPrefix ? 'bloqué' : 'autorisé'}`)
+console.log(`${byName ? 'ok  ' : 'ECHEC'} nom exact « coquille »      -> ${byName ? 'bloqué' : 'autorisé'}`)
+console.log(`${allowed === null ? 'ok  ' : 'ECHEC'} libellé actif               -> ${allowed ? 'bloqué' : 'autorisé'}`)
+if (!byPrefix) ko++
+if (!byName) ko++
+if (allowed !== null) ko++
 
 console.log(ko ? `\n${ko} cas en échec` : '\nTous les cas passent')
 process.exit(ko ? 1 : 0)
