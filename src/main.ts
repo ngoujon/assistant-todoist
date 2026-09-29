@@ -166,8 +166,14 @@ function createWindow(): void {
   window.on('move', remember)
 
   window.webContents.setWindowOpenHandler(({ url }) => {
-    void shell.openExternal(url)
+    if (/^https?:\/\//i.test(url)) void shell.openExternal(url)
     return { action: 'deny' }
+  })
+  // La fenêtre n'affiche que l'interface embarquée : toute navigation ailleurs est
+  // refusée, et un lien web part dans le navigateur.
+  window.webContents.on('will-navigate', (e, url) => {
+    e.preventDefault()
+    if (/^https?:\/\//i.test(url)) void shell.openExternal(url)
   })
 }
 

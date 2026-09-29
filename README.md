@@ -111,6 +111,27 @@ l'écriture de fichiers, les réglages système. `canUseTool` répond `allow` sa
 Le seul point de contrôle est le récap, après coup. Une action interrompue en plein vol est
 signalée « issue inconnue » plutôt que rangée d'office parmi les réussites.
 
+## Sécurité
+
+**À lire avant de s'en servir.** Cette autonomie a un prix : l'agent a les mêmes droits que
+toi sur ton Mac — `Bash`, écriture de fichiers dans tout le dossier personnel, réglages
+système — sans rien demander. Or il lit du contenu qu'il ne maîtrise pas : le texte de tes
+tâches Todoist (y compris celles qu'on partage avec toi) et les pages web qu'il consulte.
+Un texte piégé dans l'un ou l'autre (*prompt injection*) peut le pousser à lancer une
+commande. Le récap le montrera, mais après coup, et une commande shell ne s'annule pas.
+
+Si tu réutilises ce code :
+
+- réserve-le à un compte Todoist dont tu maîtrises le contenu ;
+- pour restreindre l'agent, retire `Bash`, `Write`, `Edit` et `WebFetch` de `tools` dans
+  `src/agent/session.ts`, ou fais répondre `canUseTool` autre chose que `allow` pour eux ;
+- l'app ne stocke aucun identifiant : l'authentification est celle de Claude Code sur la
+  machine, et la connexion Todoist passe par le MCP officiel (`ai.todoist.net`).
+
+Côté interface : `contextIsolation` et `sandbox` actifs, aucun accès Node dans la page, CSP
+stricte, Markdown rendu après échappement du HTML, et la fenêtre refuse toute navigation —
+seuls les liens `http(s)` s'ouvrent, dans le navigateur.
+
 ## Architecture
 
 ```
