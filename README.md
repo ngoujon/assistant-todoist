@@ -26,8 +26,8 @@ que vous vous êtes dit ce matin. Le bouton `+` repart de zéro.
 
 ## Les règles de planification
 
-L'assistant suit trois règles fortes, décrites dans `src/agent/prompt.mjs` **et** imposées
-techniquement dans `src/agent/guards.mjs` (le prompt seul ne suffisait pas : le modèle
+L'assistant suit trois règles fortes, décrites dans `src/agent/prompt.ts` **et** imposées
+techniquement dans `src/agent/guards.ts` (le prompt seul ne suffisait pas : le modèle
 créait quand même la tâche en devinant).
 
 **Règle n°1 — il tranche, il ne demande pas.** Priorité, durée, jour, heure, récurrence,
@@ -50,7 +50,7 @@ l'agent exécute, y compris les suppressions, y compris quand deux tâches se re
 même heure. En fin de tour, l'app affiche un **récap de tout ce qui a bougé** avec un bouton
 **Annuler** qui rejoue les actions à l'envers. Le contrôle est passé d'« avant, à chaque
 action » à « après, sur l'ensemble du tour ».
-`node scripts/undo-test.mjs` vérifie ce qui s'annule et ce qui ne s'annule pas.
+`node scripts/undo-test.ts` vérifie ce qui s'annule et ce qui ne s'annule pas.
 
 Autres garanties :
 
@@ -70,17 +70,17 @@ Autres garanties :
 ## Le récap et son « Annuler »
 
 Une carte par tour, en fin de traitement : une ligne par action, en français
-(`src/agent/summary.mjs` traduit, `registry.mjs` résout les identifiants), et le bouton
+(`src/agent/summary.ts` traduit, `registry.ts` résout les identifiants), et le bouton
 **Annuler**.
 
 **Un déplacement se dessine.** Le récap montre la journée touchée *avant* et *après*, à
 l'échelle : ce qui reste en place, ce qui part (en pointillé), ce qui arrive (en corail),
 et les blocs qui se chevauchent — côte à côte, cerclés de rouge, avec la ligne
-« Chevauchement : X × Y ». `src/agent/impact.mjs` calcule le modèle à partir des tâches
-que l'agent a déjà lues, `src/renderer/impact.js` le dessine.
+« Chevauchement : X × Y ». `src/agent/impact.ts` calcule le modèle à partir des tâches
+que l'agent a déjà lues, `src/renderer/impact.ts` le dessine.
 
-**Comment l'annulation marche.** `src/agent/journal.mjs` note chaque écriture *au moment de
-l'appel* — le dernier instant où `registry.mjs` tient encore l'état d'avant — et en déduit
+**Comment l'annulation marche.** `src/agent/journal.ts` note chaque écriture *au moment de
+l'appel* — le dernier instant où `registry.ts` tient encore l'état d'avant — et en déduit
 l'appel inverse : une création se supprime, un déplacement se repose sur sa date d'origine,
 une métadonnée se réécrit à son ancienne valeur, une récurrente retrouve sa formulation
 (`tous les mardis à 10h`), une tâche supprimée se recrée. Le clic envoie à l'agent la liste
@@ -114,15 +114,17 @@ signalée « issue inconnue » plutôt que rangée d'office parmi les réussites
 ## Architecture
 
 ```
-src/main.mjs           processus principal Electron : fenêtre, IPC, config
-src/preload.cjs        pont contextIsolation (aucun accès Node côté page)
-src/agent/session.mjs  session Claude Agent SDK : options, routage des messages, annulation
-src/agent/prompt.mjs   personnalité et règles métier (PROMPT_VERSION à incrémenter si elles changent)
-src/agent/guards.mjs   hooks PreToolUse : refusent l'outil tant qu'il manque une info
-src/agent/registry.mjs mémoire des objets Todoist croisés : noms, et état d'avant
-src/agent/journal.mjs  ce qui a été fait dans le tour, et l'appel inverse de chaque action
-src/agent/summary.mjs  traduction d'une action exécutée en français lisible
-src/agent/impact.mjs   modèle avant/après d'un déplacement, avec chevauchements
+src/main.ts            processus principal Electron : fenêtre, IPC, config
+src/preload.cts        pont contextIsolation (aucun accès Node côté page), compilé en CommonJS
+src/shared/types.ts    types de tout ce qui traverse l'IPC : évènements, récap, impact, API de la page
+src/agent/session.ts   session Claude Agent SDK : options, routage des messages, annulation
+src/agent/prompt.ts    personnalité et règles métier (PROMPT_VERSION à incrémenter si elles changent)
+src/agent/guards.ts    hooks PreToolUse : refusent l'outil tant qu'il manque une info
+src/agent/registry.ts  mémoire des objets Todoist croisés : noms, et état d'avant
+src/agent/journal.ts   ce qui a été fait dans le tour, et l'appel inverse de chaque action
+src/agent/summary.ts   traduction d'une action exécutée en français lisible
+src/agent/impact.ts    modèle avant/après d'un déplacement, avec chevauchements
+src/agent/json.ts      lecture prudente du JSON renvoyé par les outils
 src/renderer/          interface : chat, markdown maison, cartes d'outils, récap, schéma d'impact
 scripts/               icône, build, installation, prévisualisation, test d'intégration
 ```
@@ -139,7 +141,7 @@ Points clés :
 - **MCP Todoist** déclaré explicitement (`strictMcpConfig`) pour n'exposer que Todoist,
   sans les autres serveurs MCP configurés sur la machine.
 - **Aucune permission** : `canUseTool` autorise tout. Le contrôle est déplacé en aval, dans
-  `journal.mjs`, qui capture l'état d'avant à chaque appel et sait le rétablir.
+  `journal.ts`, qui capture l'état d'avant à chaque appel et sait le rétablir.
 - L'espace de travail de l'agent est
   `~/Library/Application Support/Assistant Todoist/Espace de travail`
   (accessible depuis les réglages).
@@ -147,17 +149,25 @@ Points clés :
 ## Développement
 
 ```bash
-npm start                     # lance l'app depuis les sources
+npm start                     # compile puis lance l'app
+npm run typecheck             # vérifie les types (processus principal + interface)
 npm run icon                  # régénère assets/icon.icns (rendu CoreGraphics)
-npm run build                 # produit build/Assistant Todoist.app (signature ad-hoc)
+npm run build                 # compile, puis produit build/Assistant Todoist.app (signature ad-hoc)
 npm run install-app           # copie dans /Applications + épingle au Dock
 
-node scripts/selftest.mjs     # test d'intégration : vraie session agent + Todoist
-node scripts/impact-test.mjs  # modèle avant/après d'un déplacement
-node scripts/undo-test.mjs        # ce qui s'annule, ce qui ne se rattrape pas
-npx electron scripts/preview.mjs sortie.png   # capture l'UI avec une conversation factice
-THEME=dark npx electron scripts/preview.mjs   # idem en thème sombre
+npm test                      # impact-test + undo-test
+npm run selftest              # test d'intégration : vraie session agent + Todoist
+npm run preview -- sortie.png # capture l'UI avec une conversation factice
+THEME=dark npm run preview    # idem en thème sombre
 ```
+
+Le code est en **TypeScript** (TypeScript 7, `strict`). `tsc` compile dans `dist/` : deux
+projets, `tsconfig.json` pour Node (processus principal, agent, scripts) et
+`tsconfig.renderer.json` pour la page (DOM). Les imports internes s'écrivent avec
+l'extension `.ts` et sont réécrits en `.js` à la compilation : les tests tournent donc
+directement sous Node, qui efface les types (`erasableSyntaxOnly` interdit ce qu'il ne
+saurait pas effacer — `enum`, propriétés de paramètre…). Le preload reste en CommonJS
+(`.cts`) : c'est ce qu'exige un preload en bac à sable.
 
 Après modification du bundle, la signature ad-hoc (`codesign --sign -`) est obligatoire
 sur Apple Silicon : `scripts/build-app.sh` s'en charge.
@@ -169,7 +179,7 @@ sur Apple Silicon : `scripts/build-app.sh` s'en charge.
 - Le `cwd` passé au SDK **doit exister**, sinon l'erreur remontée parle à tort d'un
   binaire incompatible.
 - Une app lancée depuis le Dock n'hérite pas du `PATH` du shell : il est reconstruit
-  dans `session.mjs` pour que `Bash` trouve Homebrew et consorts.
+  dans `session.ts` pour que `Bash` trouve Homebrew et consorts.
 - Les événements de l'agent émis avant le chargement du renderer sont mis en tampon,
   sinon l'état « Todoist connecté » se perd au démarrage.
 - `scripts/install-app.sh` **reconstruit systématiquement** : réutiliser un `build/`

@@ -5,3 +5,4 @@ assets/icon-1024.png
 assets/AppIcon.iconset/
 .DS_Store
 .claude/settings.local.json
+dist/

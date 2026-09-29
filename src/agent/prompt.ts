@@ -2,7 +2,7 @@
 // enregistree sous d'anciennes regles n'est alors plus reprise au demarrage.
 export const PROMPT_VERSION = 7
 
-export function buildSystemPrompt({ workspace, timezone }) {
+export function buildSystemPrompt({ workspace, timezone }: { workspace: string, timezone: string }): string {
   return `Tu es « Assistant Todoist », le copilote de planification personnel de l’utilisateur, lancé depuis une petite app macOS (pas un terminal).
 
 ## Ton rôle

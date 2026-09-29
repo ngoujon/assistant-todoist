@@ -1,48 +1,64 @@
-import { renderMarkdown } from './markdown.js'
-import { renderImpact } from './impact.js'
+import type { AgentEvent } from '../shared/types.ts'
+import { renderMarkdown } from './markdown.ts'
+import { renderImpact } from './impact.ts'
+
+type EventOf<K extends AgentEvent['k']> = Extract<AgentEvent, { k: K }>
+
+/** Un élément que index.html fournit forcément : son absence est un bug, pas un cas. */
+function byId<T extends HTMLElement = HTMLElement>(id: string): T {
+  const node = document.getElementById(id)
+  if (!node) throw new Error(`élément #${id} introuvable`)
+  return node as T
+}
+
+/** Un bloc en cours d'écriture : son élément et le texte brut reçu jusqu'ici. */
+interface LiveBlock {
+  el: HTMLElement
+  raw: string
+}
 
 const api = window.assistant
-const thread = document.getElementById('thread')
-const scroll = document.getElementById('scroll')
-const input = document.getElementById('input')
-const sendBtn = document.getElementById('btn-send')
-const statusLine = document.getElementById('status-line')
-const settingsPanel = document.getElementById('settings')
-const modelSelect = document.getElementById('model')
+const thread = byId('thread')
+const scroll = byId('scroll')
+const input = byId<HTMLTextAreaElement>('input')
+const sendBtn = byId<HTMLButtonElement>('btn-send')
+const statusLine = byId('status-line')
+const settingsPanel = byId('settings')
+const modelSelect = byId<HTMLSelectElement>('model')
 
 let busy = false
-let currentText = null // { el, raw }
-let currentThinking = null
-let toolEls = new Map()
+let currentText: LiveBlock | null = null
+let currentThinking: LiveBlock | null = null
+let toolEls = new Map<string, HTMLElement>()
 
 // ------------------------------------------------------------------ helpers
 
-const el = (tag, cls, text) => {
+const el = (tag: string, cls?: string | null, text?: string | null): HTMLElement => {
   const n = document.createElement(tag)
   if (cls) n.className = cls
   if (text != null) n.textContent = text
   return n
 }
 
-function nearBottom() {
+function nearBottom(): boolean {
   return scroll.scrollHeight - scroll.scrollTop - scroll.clientHeight < 90
 }
 
 let stick = true
 scroll.addEventListener('scroll', () => { stick = nearBottom() })
 
-function scrollDown(force) {
+function scrollDown(force?: boolean): void {
   if (force) stick = true
   if (stick) scroll.scrollTop = scroll.scrollHeight
 }
 
-function add(node) {
+function add<T extends Node>(node: T): T {
   thread.appendChild(node)
   scrollDown()
   return node
 }
 
-function clearThread() {
+function clearThread(): void {
   thread.replaceChildren()
   currentText = null
   currentThinking = null
@@ -59,7 +75,7 @@ const SUGGESTIONS = [
   'Ce qui traîne depuis trop longtemps',
 ]
 
-function showWelcome() {
+function showWelcome(): void {
   const box = el('div', 'welcome')
   const hour = new Date().getHours()
   const greet = hour < 5 ? 'Bonne nuit' : hour < 12 ? 'Bonjour' : hour < 18 ? 'Bon après-midi' : 'Bonsoir'
@@ -75,20 +91,20 @@ function showWelcome() {
   thread.appendChild(box)
 }
 
-function dropWelcome() {
+function dropWelcome(): void {
   const w = thread.querySelector('.welcome')
   if (w) w.remove()
 }
 
 // ---------------------------------------------------------- noms des outils
 
-const TODOIST_VERBS = {
+const TODOIST_VERBS: Record<string, string> = {
   find: 'Chercher', get: 'Lire', search: 'Chercher', fetch: 'Lire', list: 'Lister',
   add: 'Créer', update: 'Modifier', complete: 'Terminer', uncomplete: 'Rouvrir',
   delete: 'Supprimer', reschedule: 'Replanifier', move: 'Déplacer', reorder: 'Réordonner',
   analyze: 'Analyser', export: 'Exporter', import: 'Importer', manage: 'Gérer', view: 'Voir',
 }
-const TODOIST_NOUNS = {
+const TODOIST_NOUNS: Record<string, string> = {
   tasks: 'les tâches', task: 'la tâche', projects: 'les projets', project: 'le projet',
   sections: 'les sections', labels: 'les libellés', comments: 'les commentaires',
   filters: 'les filtres', reminders: 'les rappels', overview: 'la vue d\'ensemble',
@@ -96,7 +112,7 @@ const TODOIST_NOUNS = {
   'tasks-by-date': 'l\'agenda', 'project-health': 'la santé du projet', 'user-info': 'ton profil',
 }
 
-const BUILTIN = {
+const BUILTIN: Record<string, [string, string]> = {
   Bash: ['⌘', 'Terminal'],
   Read: ['📄', 'Lire un fichier'],
   Write: ['✏️', 'Écrire un fichier'],
@@ -109,29 +125,32 @@ const BUILTIN = {
   Task: ['🤖', 'Sous-agent'],
 }
 
-function describeTool(name) {
+function describeTool(name: string): [string, string] {
   if (name.startsWith('mcp__todoist__')) {
     const action = name.slice('mcp__todoist__'.length)
-    const [verb, ...rest] = action.split('-')
+    const [verb = '', ...rest] = action.split('-')
     const noun = rest.join('-')
     const label = `${TODOIST_VERBS[verb] || verb} ${TODOIST_NOUNS[noun] || TODOIST_NOUNS[action] || noun || ''}`.trim()
     return ['🗒', `Todoist · ${label}`]
   }
-  if (BUILTIN[name]) return BUILTIN[name]
+  const builtin = BUILTIN[name]
+  if (builtin) return builtin
   if (name.startsWith('mcp__')) return ['🔌', name.split('__').slice(1).join(' · ')]
   return ['•', name]
 }
 
-function summarizeInput(name, input) {
-  if (!input || typeof input !== 'object') return ''
+function summarizeInput(name: string, raw: unknown): string {
+  if (!raw || typeof raw !== 'object') return ''
+  const input = raw as Record<string, unknown>
   if (name === 'Bash') return String(input.command || '')
-  if (input.file_path) return String(input.file_path).split('/').pop()
+  if (input.file_path) return String(input.file_path).split('/').pop() ?? ''
   if (Array.isArray(input.tasks)) {
-    const first = input.tasks[0]
+    const first = input.tasks[0] as { content?: unknown } | undefined
     return input.tasks.length > 1 ? `${input.tasks.length} tâches` : String(first?.content || '')
   }
   for (const key of ['content', 'query', 'searchTerm', 'search', 'name', 'url', 'prompt', 'description']) {
-    if (typeof input[key] === 'string' && input[key]) return input[key]
+    const value = input[key]
+    if (typeof value === 'string' && value) return value
   }
   const first = Object.values(input).find((v) => typeof v === 'string' && v)
   return first ? String(first) : ''
@@ -139,7 +158,7 @@ function summarizeInput(name, input) {
 
 // ------------------------------------------------------------------- rendu
 
-function pushUserMessage(text, queued) {
+function pushUserMessage(text: string, queued: boolean): void {
   dropWelcome()
   finishText()
   finishThinking()
@@ -150,25 +169,27 @@ function pushUserMessage(text, queued) {
 }
 
 /** Le tour est terminé : plus rien n'est « en file ». */
-function clearQueuedBadges() {
+function clearQueuedBadges(): void {
   for (const node of thread.querySelectorAll('.msg.user.queued')) {
     node.classList.remove('queued')
     node.querySelector('.badge')?.remove()
   }
 }
 
-function startTextBlock() {
+function startTextBlock(): LiveBlock {
   dropWelcome()
   finishThinking()
   const node = el('div', 'msg assistant md')
-  currentText = { el: node, raw: '' }
+  const block = { el: node, raw: '' }
+  currentText = block
   add(node)
+  return block
 }
 
 let renderQueued = false
-function appendText(chunk) {
-  if (!currentText) startTextBlock()
-  currentText.raw += chunk
+function appendText(chunk: string): void {
+  const block = currentText ?? startTextBlock()
+  block.raw += chunk
   if (renderQueued) return
   renderQueued = true
   requestAnimationFrame(() => {
@@ -179,7 +200,7 @@ function appendText(chunk) {
   })
 }
 
-function finishText() {
+function finishText(): void {
   if (currentText) {
     currentText.el.innerHTML = renderMarkdown(currentText.raw)
     if (!currentText.raw.trim()) currentText.el.remove()
@@ -187,28 +208,30 @@ function finishText() {
   currentText = null
 }
 
-function startThinking() {
+function startThinking(): LiveBlock {
   finishText()
-  if (currentThinking) return
+  if (currentThinking) return currentThinking
   const node = el('div', 'msg thinking')
-  currentThinking = { el: node, raw: '' }
+  const block = { el: node, raw: '' }
+  currentThinking = block
   add(node)
+  return block
 }
 
-function appendThinking(chunk) {
-  if (!currentThinking) startThinking()
-  currentThinking.raw += chunk
-  currentThinking.el.textContent = currentThinking.raw
-  currentThinking.el.scrollTop = currentThinking.el.scrollHeight
+function appendThinking(chunk: string): void {
+  const block = currentThinking ?? startThinking()
+  block.raw += chunk
+  block.el.textContent = block.raw
+  block.el.scrollTop = block.el.scrollHeight
   scrollDown()
 }
 
-function finishThinking() {
+function finishThinking(): void {
   if (currentThinking) currentThinking.el.classList.add('done')
   currentThinking = null
 }
 
-function addTool(evt) {
+function addTool(evt: EventOf<'tool-use'>): void {
   finishText()
   finishThinking()
   const [glyph, label] = describeTool(evt.name)
@@ -230,25 +253,25 @@ function addTool(evt) {
   add(node)
 }
 
-function endTool(evt) {
+function endTool(evt: EventOf<'tool-result'>): void {
   const node = toolEls.get(evt.id)
   if (!node) return
   node.classList.remove('running')
   node.classList.add(evt.ok ? 'ok' : 'err')
-  const body = node.querySelector('.body')
-  if (evt.preview) body.textContent = `${body.textContent}\n\n— — —\n${evt.preview}`
+  const body = node.querySelector<HTMLElement>('.body')
+  if (body && evt.preview) body.textContent = `${body.textContent}\n\n— — —\n${evt.preview}`
   if (!evt.ok) node.classList.add('open')
 }
 
-function formatJson(value) {
+function formatJson(value: unknown): string {
   try {
-    return JSON.stringify(value, null, 2)
+    return JSON.stringify(value, null, 2) ?? String(value)
   } catch {
     return String(value)
   }
 }
 
-function addNote(text, kind) {
+function addNote(text: string, kind?: string): void {
   finishText()
   add(el('div', `note${kind ? ` ${kind}` : ''}`, text))
 }
@@ -259,7 +282,7 @@ function addNote(text, kind) {
  * Rien n'est soumis avant : on rend compte après. Une carte par tour, avec un bouton
  * qui rejoue les actions à l'envers — c'est le seul point de contrôle de l'app.
  */
-function addRecap(evt) {
+function addRecap(evt: EventOf<'recap'>): void {
   finishText()
   finishThinking()
 
@@ -294,7 +317,7 @@ function addRecap(evt) {
 
   if (!evt.undoTurn && evt.undoable) {
     const btns = el('div', 'btns')
-    const undo = el('button', 'undo')
+    const undo = el('button', 'undo') as HTMLButtonElement
     undo.append(undoGlyph(), document.createTextNode(
       evt.undoable === evt.items.length ? 'Annuler' : `Annuler ce qui peut l'être (${evt.undoable}/${evt.items.length})`,
     ))
@@ -317,7 +340,7 @@ function addRecap(evt) {
   scrollDown(true)
 }
 
-function undoGlyph() {
+function undoGlyph(): SVGSVGElement {
   const svg = document.createElementNS('http://www.w3.org/2000/svg', 'svg')
   svg.setAttribute('viewBox', '0 0 24 24')
   svg.setAttribute('width', '13')
@@ -335,7 +358,7 @@ function undoGlyph() {
 
 // -------------------------------------------------------------------- etat
 
-function setBusy(v) {
+function setBusy(v: boolean): void {
   busy = v
   document.body.classList.toggle('busy', v)
   refreshComposer()
@@ -345,20 +368,20 @@ function setBusy(v) {
  * Le bouton reste « envoyer » dès qu'il y a du texte, même pendant un traitement :
  * il ne devient « arrêter » que si le champ est vide.
  */
-function refreshComposer() {
+function refreshComposer(): void {
   const hasText = Boolean(input.value.trim())
   document.body.classList.toggle('has-text', hasText)
   sendBtn.disabled = !hasText && !busy
   sendBtn.setAttribute('aria-label', !hasText && busy ? 'Arrêter' : 'Envoyer')
 }
 
-function setStatus(text, kind) {
+function setStatus(text: string, kind?: string): void {
   statusLine.replaceChildren(el('span', `dot ${kind || ''}`), document.createTextNode(text))
 }
 
 // ------------------------------------------------------------------- envoi
 
-function submit(forced) {
+function submit(forced?: string): void {
   const text = (forced ?? input.value).trim()
   if (!text) return
 
@@ -372,7 +395,7 @@ function submit(forced) {
   setBusy(true)
 }
 
-function autoGrow() {
+function autoGrow(): void {
   input.style.height = 'auto'
   input.style.height = `${Math.min(input.scrollHeight, 168)}px`
 }
@@ -401,26 +424,27 @@ sendBtn.addEventListener('click', () => {
   else submit()
 })
 
-document.getElementById('btn-new').addEventListener('click', () => {
+byId('btn-new').addEventListener('click', () => {
   api.newChat()
   clearThread()
   setBusy(false)
   input.focus()
 })
 
-document.getElementById('btn-settings').addEventListener('click', () => {
+byId('btn-settings').addEventListener('click', () => {
   settingsPanel.classList.toggle('hidden')
 })
 
-document.getElementById('btn-workspace').addEventListener('click', () => api.openWorkspace())
+byId('btn-workspace').addEventListener('click', () => api.openWorkspace())
 
 modelSelect.addEventListener('change', () => api.setConfig({ model: modelSelect.value }))
 
 document.addEventListener('click', (e) => {
-  const link = e.target.closest('a[data-ext]')
-  if (!link) return
+  const link = e.target instanceof Element ? e.target.closest('a[data-ext]') : null
+  const href = link?.getAttribute('href')
+  if (!href) return
   e.preventDefault()
-  api.openExternal(link.getAttribute('href'))
+  api.openExternal(href)
 })
 
 // ------------------------------------------------------------- evenements

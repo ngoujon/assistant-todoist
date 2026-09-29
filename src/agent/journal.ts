@@ -5,8 +5,39 @@
 // *au moment de l'appel* (la mémoire des tâches n'est mise à jour qu'au retour de
 // l'outil) et on en déduit l'appel inverse.
 
-import { describeAction } from './summary.mjs'
-import { buildImpact } from './impact.mjs'
+import type { ActionState, Impact, Recap, SummaryLine } from '../shared/types.ts'
+import { describeAction } from './summary.ts'
+import { buildImpact } from './impact.ts'
+import { arr, asRecord, type Loose, type TaskInput, type ToolInput } from './json.ts'
+import type { TaskRegistry } from './registry.ts'
+
+/** Un appel d'outil à rejouer pour défaire une action. */
+export interface UndoCall {
+  tool: string
+  input: Loose
+}
+
+/**
+ * Comment défaire une action : les appels inverses, ou — pour une création — l'attente
+ * des ids que Todoist va attribuer. `note` dit ce qui ne se rattrape pas.
+ */
+interface Undo {
+  calls?: UndoCall[]
+  pending?: 'created'
+  contents?: string[]
+  note?: string | null
+}
+
+interface JournalEntry {
+  toolName: string
+  input: ToolInput
+  title: string
+  lines: SummaryLine[]
+  mono: boolean
+  impact: Impact | null
+  undo: Undo | null
+  state: ActionState
+}
 
 /** Outils Todoist qui écrivent. Le reste ne laisse aucune trace à raconter. */
 const TODOIST_WRITE = /^mcp__todoist__(add|update|complete|uncomplete|delete|reschedule|move|reorder|manage|import|project-)/
@@ -14,32 +45,33 @@ const TODOIST_WRITE = /^mcp__todoist__(add|update|complete|uncomplete|delete|res
 const LOCAL_WRITE = new Set(['Bash', 'Write', 'Edit'])
 
 export class ActionJournal {
-  /** @param {import('./registry.mjs').TaskRegistry} registry */
-  constructor(registry) {
+  registry: TaskRegistry
+  /** Appels partis, dont le résultat n'est pas encore revenu. */
+  open = new Map<string, JournalEntry>()
+  /** Actions du tour en cours. */
+  turn: JournalEntry[] = []
+  /** Récaps déjà rendus, pour que « Annuler » marche encore trois messages plus tard. */
+  recaps = new Map<string, JournalEntry[]>()
+  seq = 0
+
+  constructor(registry: TaskRegistry) {
     this.registry = registry
-    /** Appels partis, dont le résultat n'est pas encore revenu. */
-    this.open = new Map()
-    /** Actions du tour en cours. */
-    this.turn = []
-    /** Récaps déjà rendus, pour que « Annuler » marche encore trois messages plus tard. */
-    this.recaps = new Map()
-    this.seq = 0
   }
 
   /** Un redémarrage de session perd les appels en vol ; les récaps, eux, restent valables. */
-  reset() {
+  reset(): void {
     this.open.clear()
     this.turn = []
   }
 
   /** Appelé quand l'agent lance un outil : c'est le dernier instant où l'état d'avant est intact. */
-  noteCall(toolUseId, toolName, input) {
+  noteCall(toolUseId: string, toolName: string, input: ToolInput): void {
     if (!TODOIST_WRITE.test(toolName) && !LOCAL_WRITE.has(toolName)) return
     const described = describeAction(toolName, input, this.registry)
     if (!described) return
 
     const undo = LOCAL_WRITE.has(toolName) ? null : inverseOf(toolName, input, this.registry)
-    const entry = {
+    const entry: JournalEntry = {
       toolName,
       input,
       title: described.title,
@@ -54,7 +86,7 @@ export class ActionJournal {
   }
 
   /** Appelé au retour de l'outil : on sait enfin si l'action a pris, et sous quels ids. */
-  noteResult(toolUseId, ok, rawText) {
+  noteResult(toolUseId: string, ok: boolean, rawText: string): void {
     const entry = this.open.get(toolUseId)
     if (!entry) return
     this.open.delete(toolUseId)
@@ -70,11 +102,8 @@ export class ActionJournal {
     }
   }
 
-  /**
-   * Clôt le tour et prépare le récap.
-   * @returns {null | {id: string, undoTurn: boolean, items: Array, undoable: number}}
-   */
-  closeTurn(undoTurn) {
+  /** Clôt le tour et prépare le récap. */
+  closeTurn(undoTurn: boolean): Recap | null {
     const items = this.turn
     this.turn = []
     // Un appel resté sans réponse (interruption) : on ne sait pas s'il a abouti.
@@ -107,14 +136,13 @@ export class ActionJournal {
   /**
    * Consigne d'annulation : la liste exacte des appels inverses, dans l'ordre inverse
    * des actions. L'agent n'a rien à décider — juste à exécuter.
-   * @returns {string | null}
    */
-  undoMessage(recapId) {
+  undoMessage(recapId: string): string | null {
     const items = this.recaps.get(recapId)
     if (!items) return null
 
-    const calls = []
-    const lost = []
+    const calls: UndoCall[] = []
+    const lost: string[] = []
     for (const entry of [...items].reverse()) {
       if (entry.undo?.calls?.length) calls.push(...entry.undo.calls)
       else if (entry.state === 'done') lost.push(entry.title)
@@ -148,31 +176,28 @@ export class ActionJournal {
 
 // ------------------------------------------------------------------ inverses
 
-/**
- * L'appel qui défait l'appel donné, calculé sur l'état d'avant.
- * @returns {null | {calls?: Array<{tool: string, input: object}>, pending?: string, contents?: string[], note?: string}}
- */
-function inverseOf(toolName, input, registry) {
+/** L'appel qui défait l'appel donné, calculé sur l'état d'avant. */
+function inverseOf(toolName: string, input: ToolInput, registry: TaskRegistry | null): Undo | null {
   switch (toolName) {
     case 'mcp__todoist__add-tasks': {
-      const contents = arr(input?.tasks).map((t) => t?.content).filter(Boolean)
+      const contents = arr<TaskInput>(input.tasks).map((t) => t.content).filter((c): c is string => Boolean(c))
       return contents.length ? { pending: 'created', contents } : null
     }
 
     case 'mcp__todoist__complete-tasks': {
-      const ids = arr(input?.ids)
+      const ids = arr<string>(input.ids)
       return ids.length ? { calls: [{ tool: 'mcp__todoist__uncomplete-tasks', input: { ids } }] } : null
     }
 
     case 'mcp__todoist__uncomplete-tasks': {
-      const ids = arr(input?.ids)
+      const ids = arr<string>(input.ids)
       return ids.length ? { calls: [{ tool: 'mcp__todoist__complete-tasks', input: { ids } }] } : null
     }
 
     case 'mcp__todoist__reschedule-tasks': {
-      const tasks = []
+      const tasks: Array<{ id: unknown, date: string }> = []
       let partial = false
-      for (const t of arr(input?.tasks)) {
+      for (const t of arr<TaskInput>(input.tasks)) {
         const before = registry?.task(t.id)
         if (before?.due) tasks.push({ id: t.id, date: before.due })
         else partial = true
@@ -188,8 +213,8 @@ function inverseOf(toolName, input, registry) {
       return inverseUpdate(input, registry)
 
     case 'mcp__todoist__delete-object': {
-      if (input?.type && input.type !== 'task') return { note: 'une suppression de conteneur ne se rattrape pas' }
-      const before = registry?.task(input?.id)
+      if (input.type && input.type !== 'task') return { note: 'une suppression de conteneur ne se rattrape pas' }
+      const before = registry?.task(input.id)
       if (!before?.content) return { note: 'la tâche supprimée n\'était pas connue' }
       return {
         calls: [{
@@ -208,7 +233,7 @@ function inverseOf(toolName, input, registry) {
     }
 
     case 'mcp__todoist__project-move': {
-      const before = registry?.task(input?.id)?.projectId
+      const before = registry?.task(input.id)?.projectId
       if (!before) return { note: 'son projet d\'origine n\'était pas connu' }
       return { calls: [{ tool: 'mcp__todoist__project-move', input: { id: input.id, projectId: before } }] }
     }
@@ -220,15 +245,15 @@ function inverseOf(toolName, input, registry) {
 }
 
 /** Rétablit champ par champ ce qu'un `update-tasks` a écrasé. */
-function inverseUpdate(input, registry) {
-  const metadata = []
-  const reschedules = []
+function inverseUpdate(input: ToolInput, registry: TaskRegistry | null): Undo {
+  const metadata: Loose[] = []
+  const reschedules: Array<{ id: unknown, date: string }> = []
   let partial = false
 
-  for (const task of arr(input?.tasks)) {
+  for (const task of arr<TaskInput>(input.tasks)) {
     const before = registry?.task(task.id)
     if (!before) { partial = true; continue }
-    const restore = { id: task.id }
+    const restore: Loose = { id: task.id }
 
     if (task.content != null) restore.content = before.content
     if (task.priority != null) restore.priority = before.priority
@@ -253,14 +278,14 @@ function inverseUpdate(input, registry) {
     if (Object.keys(cleaned).length > 1) metadata.push(cleaned)
   }
 
-  const calls = []
+  const calls: UndoCall[] = []
   if (metadata.length) calls.push({ tool: 'mcp__todoist__update-tasks', input: { tasks: metadata } })
   if (reschedules.length) calls.push({ tool: 'mcp__todoist__reschedule-tasks', input: { tasks: reschedules } })
   if (!calls.length) return { note: 'l\'état d\'avant n\'était pas connu' }
   return { calls, note: partial ? 'annulation partielle : une valeur d\'avant manquait' : null }
 }
 
-function nonUndoableReason(toolName) {
+function nonUndoableReason(toolName: string): string {
   if (LOCAL_WRITE.has(toolName)) return 'hors Todoist : non annulable'
   return 'non annulable'
 }
@@ -268,18 +293,18 @@ function nonUndoableReason(toolName) {
 // ------------------------------------------------------------------ helpers
 
 /** Retrouve les ids que Todoist vient d'attribuer, en recoupant par le titre. */
-function createdIds(rawText, contents) {
-  let data
+function createdIds(rawText: string, contents: string[] | undefined): string[] {
+  let data: unknown
   try {
     data = JSON.parse(String(rawText))
   } catch {
     return []
   }
-  const found = []
+  const found: Array<{ id: string, content: string }> = []
   walk(data, 0, (node) => {
-    if (typeof node.id === 'string' && typeof node.content === 'string') found.push(node)
+    if (typeof node.id === 'string' && typeof node.content === 'string') found.push({ id: node.id, content: node.content })
   })
-  const ids = []
+  const ids: string[] = []
   for (const content of contents || []) {
     const hit = found.find((o) => o.content === content && !ids.includes(o.id))
     if (hit) ids.push(hit.id)
@@ -289,25 +314,22 @@ function createdIds(rawText, contents) {
   return ids
 }
 
-function walk(node, depth, visit) {
+function walk(node: unknown, depth: number, visit: (node: Loose) => void): void {
   if (depth > 6 || !node) return
   if (Array.isArray(node)) {
     for (const item of node) walk(item, depth + 1, visit)
     return
   }
-  if (typeof node !== 'object') return
-  visit(node)
-  for (const value of Object.values(node)) {
+  const record = asRecord(node)
+  if (!record) return
+  visit(record)
+  for (const value of Object.values(record)) {
     if (value && typeof value === 'object') walk(value, depth + 1, visit)
   }
 }
 
-function clean(obj) {
-  const out = {}
+function clean(obj: Loose): Loose {
+  const out: Loose = {}
   for (const [k, v] of Object.entries(obj)) if (v !== undefined && v !== null) out[k] = v
   return out
-}
-
-function arr(value) {
-  return Array.isArray(value) ? value.filter(Boolean) : []
 }

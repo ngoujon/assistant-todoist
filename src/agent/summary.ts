@@ -1,15 +1,25 @@
 // Traduit une action déjà exécutée en français lisible : le récap doit se lire sans
 // JSON ni identifiants, et dire ce qui a changé — pas ce qu'on a demandé.
 
-const PRIORITY_LABEL = { p1: 'p1 — urgent', p2: 'p2 — important', p3: 'p3 — à faire', p4: 'p4 — un jour' }
+import type { SummaryLine } from '../shared/types.ts'
+import { arr, type TaskInput, type ToolInput } from './json.ts'
+import type { TaskRegistry } from './registry.ts'
 
-const OBJECT_LABEL = {
+export interface ActionSummary {
+  title: string
+  lines: SummaryLine[]
+  mono?: boolean
+}
+
+const PRIORITY_LABEL: Record<string, string> = { p1: 'p1 — urgent', p2: 'p2 — important', p3: 'p3 — à faire', p4: 'p4 — un jour' }
+
+const OBJECT_LABEL: Record<string, string> = {
   task: 'la tâche', project: 'le projet', section: 'la section', comment: 'le commentaire',
   label: 'le libellé', filter: 'le filtre', reminder: 'le rappel', location_reminder: 'le rappel de lieu',
 }
 
 /** « 2026-08-31T09:30:00 » -> « lundi 31 août à 9h30 ». */
-export function frDate(value) {
+export function frDate(value: unknown): string | null {
   const m = String(value ?? '').match(/^(\d{4})-(\d{2})-(\d{2})(?:[T ](\d{2}):(\d{2}))?/)
   if (!m) return value ? String(value) : null
   const [, y, mo, d, h, min] = m
@@ -19,19 +29,16 @@ export function frDate(value) {
   return `${day} à ${Number(h)}h${min === '00' ? '' : min}`
 }
 
-const quote = (s) => `« ${String(s).trim()} »`
-const plural = (n, one, many) => (n > 1 ? `${n} ${many}` : one)
+const quote = (s: unknown) => `« ${String(s).trim()} »`
+const plural = (n: number, one: string, many: string) => (n > 1 ? `${n} ${many}` : one)
 
-/**
- * @returns {{title: string, lines: Array<{head: string, meta?: string}>, mono?: boolean} | null}
- *   null = l'action ne se raconte pas, elle n'a pas sa place dans le récap.
- */
-export function describeAction(toolName, input, registry) {
-  const named = (id) => registry?.taskName(id) || 'une tâche non identifiée'
+/** null = l'action ne se raconte pas, elle n'a pas sa place dans le récap. */
+export function describeAction(toolName: string, input: ToolInput, registry: TaskRegistry | null): ActionSummary | null {
+  const named = (id: unknown) => registry?.taskName(id) || 'une tâche non identifiée'
 
   switch (toolName) {
     case 'mcp__todoist__add-tasks': {
-      const tasks = arr(input?.tasks)
+      const tasks = arr<TaskInput>(input.tasks)
       if (!tasks.length) return null
       return {
         title: `Créé ${plural(tasks.length, 'une tâche', 'tâches')}`,
@@ -41,14 +48,14 @@ export function describeAction(toolName, input, registry) {
             t.dueString ? frNatural(t.dueString) : null,
             t.duration || null,
             t.priority ? (PRIORITY_LABEL[t.priority] || t.priority) : null,
-            arr(t.labels).map((l) => `@${l}`).join(' ') || null,
+            arr<string>(t.labels).map((l) => `@${l}`).join(' ') || null,
           ].filter(Boolean).join(' · ') || 'sans détail',
         })),
       }
     }
 
     case 'mcp__todoist__update-tasks': {
-      const tasks = arr(input?.tasks)
+      const tasks = arr<TaskInput>(input.tasks)
       if (!tasks.length) return null
       return {
         title: `Modifié ${plural(tasks.length, 'une tâche', 'tâches')}`,
@@ -57,7 +64,7 @@ export function describeAction(toolName, input, registry) {
     }
 
     case 'mcp__todoist__reschedule-tasks': {
-      const tasks = arr(input?.tasks)
+      const tasks = arr<TaskInput>(input.tasks)
       if (!tasks.length) return null
       return {
         title: `Déplacé ${plural(tasks.length, 'une tâche', 'tâches')}`,
@@ -72,20 +79,20 @@ export function describeAction(toolName, input, registry) {
     }
 
     case 'mcp__todoist__complete-tasks': {
-      const ids = arr(input?.ids)
+      const ids = arr<string>(input.ids)
       if (!ids.length) return null
       return { title: `Terminé ${plural(ids.length, 'une tâche', 'tâches')}`, lines: ids.map((id) => ({ head: quote(named(id)) })) }
     }
 
     case 'mcp__todoist__uncomplete-tasks': {
-      const ids = arr(input?.ids)
+      const ids = arr<string>(input.ids)
       if (!ids.length) return null
       return { title: `Rouvert ${plural(ids.length, 'une tâche', 'tâches')}`, lines: ids.map((id) => ({ head: quote(named(id)) })) }
     }
 
     case 'mcp__todoist__delete-object': {
-      if (!input?.id) return null
-      const what = OBJECT_LABEL[input.type] || 'l\'élément'
+      if (!input.id) return null
+      const what = OBJECT_LABEL[input.type ?? ''] || 'l\'élément'
       const name = input.type === 'task' ? named(input.id) : registry?.name(input.id)
       return { title: `Supprimé ${what}${name ? ` ${quote(name)}` : ''}`, lines: [] }
     }
@@ -93,7 +100,7 @@ export function describeAction(toolName, input, registry) {
     case 'mcp__todoist__project-move': {
       return {
         title: 'Déplacé vers un autre projet',
-        lines: [{ head: quote(named(input?.id ?? '')), meta: `→ ${registry?.name(input?.projectId) || 'un autre projet'}` }],
+        lines: [{ head: quote(named(input.id ?? '')), meta: `→ ${registry?.name(input.projectId) || 'un autre projet'}` }],
       }
     }
 
@@ -107,14 +114,14 @@ export function describeAction(toolName, input, registry) {
     }
 
     case 'Bash': {
-      const command = String(input?.command || '')
+      const command = String(input.command || '')
       if (!command) return null
       return { title: 'Commande lancée sur ton Mac', lines: [{ head: command }], mono: true }
     }
 
     case 'Write':
     case 'Edit': {
-      const file = String(input?.file_path || '')
+      const file = String(input.file_path || '')
       if (!file) return null
       const base = file.split('/').pop()
       return { title: toolName === 'Write' ? `Écrit le fichier ${base}` : `Modifié le fichier ${base}`, lines: [{ head: file }], mono: true }
@@ -126,11 +133,11 @@ export function describeAction(toolName, input, registry) {
 }
 
 /** Les champs réellement touchés par un `update-tasks`, en clair. */
-function changesOf(task, registry) {
-  const changes = []
+function changesOf(task: TaskInput, registry: TaskRegistry | null): string {
+  const changes: string[] = []
   if (task.content) changes.push(`titre → ${quote(task.content)}`)
   if (task.priority) changes.push(`priorité → ${PRIORITY_LABEL[task.priority] || task.priority}`)
-  if (task.labels) changes.push(`libellés → ${arr(task.labels).map((l) => `@${l}`).join(', ') || 'aucun'}`)
+  if (task.labels) changes.push(`libellés → ${arr<string>(task.labels).map((l) => `@${l}`).join(', ') || 'aucun'}`)
   if (task.duration) changes.push(`durée → ${task.duration}`)
   if (task.dueString) changes.push(task.dueString === 'remove' ? 'échéance retirée' : `échéance → ${quote(task.dueString)}`)
   if (task.deadlineDate) changes.push(`date limite → ${frDate(task.deadlineDate)}`)
@@ -142,20 +149,16 @@ function changesOf(task, registry) {
   return changes.join(' · ') || 'aucun changement détecté'
 }
 
-function collectNames(input) {
+function collectNames(input: ToolInput): string[] {
   for (const key of ['projects', 'sections', 'labels', 'items']) {
-    const list = arr(input?.[key])
-    if (list.length) return list.map((o) => o?.name || o?.content).filter(Boolean)
+    const list = arr<{ name?: string, content?: string }>(input[key])
+    if (list.length) return list.map((o) => o?.name || o?.content).filter((n): n is string => Boolean(n))
   }
-  return input?.name ? [input.name] : []
-}
-
-function arr(value) {
-  return Array.isArray(value) ? value.filter(Boolean) : []
+  return input.name ? [input.name] : []
 }
 
 /** Petites traductions des dates naturelles anglaises que le modèle laisse parfois passer. */
-function frNatural(due) {
+function frNatural(due: string): string {
   return String(due)
     .replace(/\btomorrow\b/gi, 'demain')
     .replace(/\btoday\b/gi, "aujourd'hui")

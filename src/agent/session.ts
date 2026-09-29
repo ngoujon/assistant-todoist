@@ -1,12 +1,14 @@
-import { query } from '@anthropic-ai/claude-agent-sdk'
+import { query, type Options, type Query, type SDKMessage, type SDKUserMessage } from '@anthropic-ai/claude-agent-sdk'
 import fs from 'node:fs'
 import os from 'node:os'
 import path from 'node:path'
 import { createRequire } from 'node:module'
-import { buildSystemPrompt } from './prompt.mjs'
-import { TodoistGuard } from './guards.mjs'
-import { TaskRegistry } from './registry.mjs'
-import { ActionJournal } from './journal.mjs'
+import type { AgentEvent } from '../shared/types.ts'
+import { buildSystemPrompt } from './prompt.ts'
+import { TodoistGuard } from './guards.ts'
+import { TaskRegistry, type RegistrySnapshot } from './registry.ts'
+import { ActionJournal } from './journal.ts'
+import { toolInput } from './json.ts'
 
 const HOME = os.homedir()
 const require = createRequire(import.meta.url)
@@ -26,7 +28,7 @@ const EXTRA_PATH = [
 // Le SDK embarque son propre binaire Claude Code (@anthropic-ai/claude-agent-sdk-darwin-arm64)
 // et le resout par chemin de module : rien a chercher dans le PATH. On ne garde ce repli
 // que si le paquet natif manque (installation partielle).
-function resolveClaudeExecutable() {
+function resolveClaudeExecutable(): string | undefined {
   try {
     require.resolve('@anthropic-ai/claude-agent-sdk-darwin-arm64/package.json')
     return undefined
@@ -42,12 +44,18 @@ function resolveClaudeExecutable() {
 
 /**
  * Rien ne passe plus par une validation : l'agent exécute, l'app rend compte ensuite
- * et l’utilisateur annule d'un bouton si ça ne lui va pas. Voir `journal.mjs`.
+ * et l’utilisateur annule d'un bouton si ça ne lui va pas. Voir `journal.ts`.
  */
 
-function createInputQueue() {
-  const pending = []
-  let waiter = null
+/** File d'entrée du mode *streaming input* : le CLI la lit tant que la session vit. */
+interface InputQueue extends AsyncIterable<SDKUserMessage> {
+  push(msg: SDKUserMessage): void
+  close(): void
+}
+
+function createInputQueue(): InputQueue {
+  const pending: SDKUserMessage[] = []
+  let waiter: ((r: IteratorResult<SDKUserMessage, undefined>) => void) | null = null
   let closed = false
   return {
     push(msg) {
@@ -56,13 +64,14 @@ function createInputQueue() {
     },
     close() {
       closed = true
-      if (waiter) { const w = waiter; waiter = null; w({ done: true }) }
+      if (waiter) { const w = waiter; waiter = null; w({ value: undefined, done: true }) }
     },
     async *[Symbol.asyncIterator]() {
       while (true) {
-        if (pending.length) { yield pending.shift(); continue }
+        const next = pending.shift()
+        if (next) { yield next; continue }
         if (closed) return
-        const r = await new Promise((res) => { waiter = res })
+        const r = await new Promise<IteratorResult<SDKUserMessage, undefined>>((res) => { waiter = res })
         if (r.done) return
         yield r.value
       }
@@ -70,47 +79,65 @@ function createInputQueue() {
   }
 }
 
+export interface SessionConfig {
+  model: string
+}
+
+export interface SessionDeps {
+  /** Envoie un évènement au renderer. */
+  emit: (evt: AgentEvent) => void
+  getConfig: () => SessionConfig
+  workspace: string
+  tasksSnapshot?: Partial<RegistrySnapshot> | null
+}
+
 export class AgentSession {
+  emit: (evt: AgentEvent) => void
+  getConfig: () => SessionConfig
+  workspace: string
+  q: Query | null = null
+  queue: InputQueue | null = null
+  abort: AbortController | null = null
+  sessionId: string | null = null
+  resumeId: string | null = null
+  resumeNotified = false
+  busy = false
+  streamedMessages = new Set<string>()
+  toolNames = new Map<string, string>()
+  registry: TaskRegistry
+  guard: TodoistGuard
+  journal: ActionJournal
+  /** Le tour en cours est-il une annulation ? Son récap se lit autrement. */
+  undoTurn = false
+  readyTimer: NodeJS.Timeout | undefined = undefined
+  retries = 0
   /**
-   * @param {object} deps
-   * @param {(evt: object) => void} deps.emit           envoie un evenement au renderer
-   * @param {() => object} deps.getConfig               { model }
-   * @param {string} deps.workspace
+   * Messages de l’utilisateur *dans le tour en cours* : servent a savoir s'il a demande
+   * le changement. Vides a chaque fin de tour, sinon une tache nommee il y a deux
+   * demandes passerait pour une consigne actuelle.
    */
-  constructor({ emit, getConfig, workspace, tasksSnapshot }) {
+  recentUserText: string[] = []
+  /** Messages envoyes mais pas encore aboutis : rejoues si la session redemarre. */
+  unanswered: SDKUserMessage[] = []
+  lastNote: string | null = null
+  lastNoteAt = 0
+  lastRateStatus: string | null = null
+
+  constructor({ emit, getConfig, workspace, tasksSnapshot }: SessionDeps) {
     this.emit = emit
     this.getConfig = getConfig
     this.workspace = workspace
-    this.q = null
-    this.queue = null
-    this.abort = null
-    this.sessionId = null
-    this.busy = false
-    this.streamedMessages = new Set()
-    this.toolNames = new Map()
     // La mémoire des tâches survit aux redémarrages : sans elle, une conversation
     // reprise afficherait « tâche a1B2 » au lieu du nom dans le récap — et surtout
     // n'aurait plus l'état d'avant qu'exige « Annuler ».
     this.registry = new TaskRegistry(tasksSnapshot)
     this.guard = new TodoistGuard(this.registry, () => this.recentUserText.join(' '))
     this.journal = new ActionJournal(this.registry)
-    /** Le tour en cours est-il une annulation ? Son récap se lit autrement. */
-    this.undoTurn = false
-    this.readyTimer = null
-    this.retries = 0
-    /**
-     * Messages de l’utilisateur *dans le tour en cours* : servent a savoir s'il a demande
-     * le changement. Vides a chaque fin de tour, sinon une tache nommee il y a deux
-     * demandes passerait pour une consigne actuelle.
-     */
-    this.recentUserText = []
-    /** Messages envoyes mais pas encore aboutis : rejoues si la session redemarre. */
-    this.unanswered = []
   }
 
-  get running() { return this.q !== null }
+  get running(): boolean { return this.q !== null }
 
-  buildOptions(resume) {
+  buildOptions(resume: string | undefined): Options {
     const cfg = this.getConfig()
     const claudeBin = resolveClaudeExecutable()
     return {
@@ -134,7 +161,7 @@ export class AgentSession {
       permissionMode: 'default',
       hooks: this.guard.hooks(),
       includePartialMessages: true,
-      abortController: this.abort,
+      abortController: this.abort ?? undefined,
       resume: resume || undefined,
       title: 'Assistant Todoist',
       env: {
@@ -143,14 +170,14 @@ export class AgentSession {
         CLAUDE_AGENT_SDK_CLIENT_APP: 'assistant-todoist/1.0.0',
       },
       ...(claudeBin ? { pathToClaudeCodeExecutable: claudeBin } : {}),
-      stderr: (d) => { if (process.env.ASSISTANT_DEBUG) process.stderr.write(`[claude] ${d}`) },
+      stderr: (d: string) => { if (process.env.ASSISTANT_DEBUG) process.stderr.write(`[claude] ${d}`) },
       // Tout est autorisé : le contrôle se fait après coup, par le récap et son « Annuler ».
       canUseTool: async (_toolName, input) => ({ behavior: 'allow', updatedInput: input }),
     }
   }
 
   /** N'écrit une panne qu'une fois par minute : les tentatives répètent la même. */
-  noteOnce(message) {
+  noteOnce(message: string): void {
     const now = Date.now()
     if (this.lastNote === message && now - this.lastNoteAt < 60000) return
     this.lastNote = message
@@ -158,7 +185,7 @@ export class AgentSession {
     this.emit({ k: 'error', message })
   }
 
-  start({ resume, replay } = {}) {
+  start({ resume, replay }: { resume?: string, replay?: SDKUserMessage[] } = {}): void {
     this.stop()
     this.abort = new AbortController()
     this.queue = createInputQueue()
@@ -169,17 +196,18 @@ export class AgentSession {
     this.guard = new TodoistGuard(this.registry, () => this.recentUserText.join(' '))
     // Les appels en vol sont perdus par le redémarrage ; les récaps déjà rendus restent annulables.
     this.journal.reset()
-    this.q = query({ prompt: this.queue, options: this.buildOptions(resume) })
+    const queue = this.queue
+    this.q = query({ prompt: queue, options: this.buildOptions(resume) })
     this.emit({ k: 'status', state: 'connecting' })
-    this.pump()
-    for (const message of replay || []) this.queue.push(message)
+    void this.pump()
+    for (const message of replay || []) queue.push(message)
   }
 
   /**
    * Le CLI n'initialise la session qu'au premier message : on ne surveille donc qu'a
    * partir de la, et on relance une fois si rien ne revient.
    */
-  armReadyWatchdog() {
+  armReadyWatchdog(): void {
     clearTimeout(this.readyTimer)
     this.readyTimer = setTimeout(() => {
       if (this.sessionId) return
@@ -194,8 +222,9 @@ export class AgentSession {
     }, 40000)
   }
 
-  async pump() {
+  async pump(): Promise<void> {
     const current = this.q
+    if (!current) return
     try {
       for await (const msg of current) {
         if (this.q !== current) break
@@ -212,12 +241,12 @@ export class AgentSession {
         this.start({})
         return
       }
-      this.emit({ k: 'error', message: String(err?.message || err) })
+      this.emit({ k: 'error', message: errorText(err) })
       this.emit({ k: 'status', state: 'idle' })
     }
   }
 
-  stop() {
+  stop(): void {
     clearTimeout(this.readyTimer)
     try { this.queue?.close() } catch {}
     try { this.abort?.abort() } catch {}
@@ -226,17 +255,16 @@ export class AgentSession {
     this.busy = false
   }
 
-  /**
-   * @param {string} text
-   * @param {{fromUser?: boolean}} [opts] une consigne d'annulation n'est pas une demande
-   *   de l’utilisateur : elle ne doit pas peser sur les garde-fous qui lisent ses mots.
-   */
   /** Arrête l'agent à la fermeture de l'app. */
-  dispose() {
+  dispose(): void {
     this.stop()
   }
 
-  send(text, { fromUser = true } = {}) {
+  /**
+   * @param opts.fromUser une consigne d'annulation n'est pas une demande de
+   *   l’utilisateur : elle ne doit pas peser sur les garde-fous qui lisent ses mots.
+   */
+  send(text: string, { fromUser = true }: { fromUser?: boolean } = {}): void {
     if (!this.q) this.start({})
     this.markBusy()
     if (fromUser) {
@@ -244,14 +272,14 @@ export class AgentSession {
       this.recentUserText.length = Math.min(this.recentUserText.length, 3)
     }
     this.emit({ k: 'turn-start' })
-    const message = {
+    const message: SDKUserMessage = {
       type: 'user',
       message: { role: 'user', content: [{ type: 'text', text }] },
       parent_tool_use_id: null,
       session_id: this.sessionId || '',
     }
     this.unanswered.push(message)
-    this.queue.push(message)
+    this.queue?.push(message)
     if (!this.sessionId) this.armReadyWatchdog()
   }
 
@@ -259,7 +287,7 @@ export class AgentSession {
    * Un message envoyé pendant un tour est fondu dans ce tour par le CLI : on ne peut
    * donc pas compter les envois pour savoir si l'agent travaille. On suit son activité.
    */
-  markBusy() {
+  markBusy(): void {
     if (this.busy) return
     this.busy = true
     this.emit({ k: 'status', state: 'thinking' })
@@ -268,9 +296,9 @@ export class AgentSession {
   /**
    * Rejoue à l'envers les actions d'un récap. Les garde-fous sont mis en veille : ils
    * empêchent d'écrire n'importe quoi, pas de remettre exactement ce qui était là.
-   * @returns {boolean} false si le récap n'est plus annulable.
+   * @returns false si le récap n'est plus annulable.
    */
-  undo(recapId) {
+  undo(recapId: string): boolean {
     const message = this.journal.undoMessage(recapId)
     if (!message) return false
     this.undoTurn = true
@@ -280,7 +308,7 @@ export class AgentSession {
     return true
   }
 
-  async interrupt() {
+  async interrupt(): Promise<void> {
     if (!this.q || !this.busy) return
     try { await this.q.interrupt() } catch {}
     this.busy = false
@@ -293,15 +321,16 @@ export class AgentSession {
     this.emit({ k: 'status', state: 'idle' })
   }
 
-  async setModel(model) {
+  async setModel(model: string): Promise<void> {
     if (this.q) { try { await this.q.setModel(model) } catch {} }
   }
 
   // ---------------------------------------------------------------- routage
 
-  route(msg) {
+  route(msg: SDKMessage): void {
     if (process.env.ASSISTANT_DEBUG) {
-      console.log('[agent]', msg.type, msg.subtype || msg.event?.type || '')
+      const detail = 'subtype' in msg ? msg.subtype : msg.type === 'stream_event' ? msg.event.type : ''
+      console.log('[agent]', msg.type, detail || '')
     }
     switch (msg.type) {
       case 'system':
@@ -351,7 +380,7 @@ export class AgentSession {
           if (block.type === 'tool_use') {
             this.toolNames.set(block.id, block.name)
             // Avant l'exécution : c'est le dernier moment où la mémoire tient l'état d'avant.
-            this.journal.noteCall(block.id, block.name, block.input)
+            this.journal.noteCall(block.id, block.name, toolInput(block.input))
             this.emit({ k: 'tool-use', id: block.id, name: block.name, input: block.input })
           } else if (block.type === 'text' && !alreadyStreamed && block.text?.trim()) {
             this.emit({ k: 'text-start' })
@@ -385,7 +414,7 @@ export class AgentSession {
       case 'rate_limit_event': {
         // Une limite d'usage atteinte se traduit par des reponses qui n'arrivent
         // jamais : autant le dire plutot que de laisser tourner le rond.
-        const info = msg.rate_limit_info || {}
+        const info = msg.rate_limit_info
         if (info.status === this.lastRateStatus) break
         this.lastRateStatus = info.status
         if (info.status === 'rejected') {
@@ -409,7 +438,7 @@ export class AgentSession {
         this.emit({
           k: 'result',
           isError: msg.subtype !== 'success',
-          text: msg.subtype !== 'success' ? (msg.result || msg.subtype) : '',
+          text: msg.subtype !== 'success' ? msg.subtype : '',
           costUsd: msg.total_cost_usd,
           durationMs: msg.duration_ms,
         })
@@ -420,16 +449,24 @@ export class AgentSession {
   }
 }
 
-function textOf(content) {
+/** Texte d'un bloc `tool_result` : une chaîne, ou les blocs texte d'une liste. */
+function textOf(content: unknown): string {
   if (typeof content === 'string') return content
   if (Array.isArray(content)) {
-    return content.filter((b) => b?.type === 'text').map((b) => b.text).join('\n')
+    return content
+      .filter((b): b is { type: 'text', text: string } => b?.type === 'text' && typeof b.text === 'string')
+      .map((b) => b.text)
+      .join('\n')
   }
   return ''
 }
 
-function truncate(s, n = 600) {
+function truncate(s: string, n = 600): string {
   if (!s) return ''
   const t = String(s).trim()
   return t.length > n ? `${t.slice(0, n)}…` : t
+}
+
+function errorText(err: unknown): string {
+  return err instanceof Error ? err.message : String(err)
 }

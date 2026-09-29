@@ -1,15 +1,20 @@
 // Prévisualisation de l'interface, sans agent : rejoue une conversation type
 // puis écrit une capture PNG. Usage :
-//   npx electron scripts/preview.mjs [sortie.png]
+//   npm run preview -- [sortie.png]
+// (tourne sur la version compilée : dist/scripts/preview.js)
 import { app, BrowserWindow, nativeTheme } from 'electron'
 import path from 'node:path'
 import fs from 'node:fs'
 import { fileURLToPath } from 'node:url'
+import type { AgentEvent } from '../src/shared/types.ts'
 
-const root = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '..')
+const dist = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '..')
+const root = path.resolve(dist, '..')
 const out = process.argv[2] || path.join(root, 'preview.png')
 
-const SCRIPT = [
+type Step = { user: string } | { evt: AgentEvent }
+
+const SCRIPT: Step[] = [
   { user: 'Ajoute « tâche E » cet aprem' },
   { evt: { k: 'ready', sessionId: 'x', model: 'claude-opus-5', todoist: 'connected' } },
   { evt: { k: 'tool-use', id: 't0', name: 'mcp__todoist__find-labels', input: {} } },
@@ -23,7 +28,7 @@ const SCRIPT = [
       text: `Ton après-midi est **plein** : *Tâche B* 14h–16h (p2) puis *Tâche C* 16h30.\n\nAvant de poser quoi que ce soit :\n\n1. **Priorité ?** (je dirais **p2**)\n2. **Durée ?** (je dirais **30 min**)\n3. **Créneau ?** je vois deux options : **18h** ce soir, ou je décale *Tâche B* à demain 9h\n4. **Récurrent ?** (je pars sur **ponctuel**)\n\nLibellés : \`@libellé-1\` + \`@libellé-2\`.`,
     },
   },
-  { evt: { k: 'result', isError: false, costUsd: 0.03, durationMs: 6400 } },
+  { evt: { k: 'result', isError: false, text: '', costUsd: 0.03, durationMs: 6400 } },
   { user: 'p2, 30 min, décale Tâche B à demain 9h, ponctuel' },
   { evt: { k: 'tool-use', id: 't2', name: 'mcp__todoist__reschedule-tasks', input: { tasks: [{ id: 'A', date: '2026-08-31T09:45:00' }] } } },
   { evt: { k: 'tool-result', id: 't2', name: 'mcp__todoist__reschedule-tasks', ok: true, preview: 'ok' } },
@@ -56,15 +61,15 @@ const SCRIPT = [
                 from: 480,
                 to: 900,
                 before: [
-                  { id: 'B', name: 'Tâche B', start: 540, end: 660, kind: 'stay' },
-                  { id: 'C', name: 'Tâche C', start: 690, end: 735, kind: 'stay' },
-                  { id: 'E', name: 'Tâche D', start: 780, end: 810, kind: 'stay' },
+                  { id: 'B', name: 'Tâche B', start: 540, end: 660, allDay: false, kind: 'stay' },
+                  { id: 'C', name: 'Tâche C', start: 690, end: 735, allDay: false, kind: 'stay' },
+                  { id: 'E', name: 'Tâche D', start: 780, end: 810, allDay: false, kind: 'stay' },
                 ],
                 after: [
-                  { id: 'B', name: 'Tâche B', start: 540, end: 660, kind: 'stay' },
-                  { id: 'A', name: 'Tâche A', start: 615, end: 675, kind: 'moved' },
-                  { id: 'C', name: 'Tâche C', start: 690, end: 735, kind: 'stay' },
-                  { id: 'E', name: 'Tâche D', start: 780, end: 810, kind: 'stay' },
+                  { id: 'B', name: 'Tâche B', start: 540, end: 660, allDay: false, kind: 'stay' },
+                  { id: 'A', name: 'Tâche A', start: 615, end: 675, allDay: false, kind: 'moved' },
+                  { id: 'C', name: 'Tâche C', start: 690, end: 735, allDay: false, kind: 'stay' },
+                  { id: 'E', name: 'Tâche D', start: 780, end: 810, allDay: false, kind: 'stay' },
                 ],
               },
             ],
@@ -92,11 +97,12 @@ const SCRIPT = [
       ],
     },
   },
-  { evt: { k: 'result', isError: false, costUsd: 0.05, durationMs: 8100 } },
+  { evt: { k: 'result', isError: false, text: '', costUsd: 0.05, durationMs: 8100 } },
 ]
 
-app.whenReady().then(async () => {
-  if (process.env.THEME) nativeTheme.themeSource = process.env.THEME
+void app.whenReady().then(async () => {
+  const theme = process.env.THEME
+  if (theme === 'dark' || theme === 'light' || theme === 'system') nativeTheme.themeSource = theme
   const win = new BrowserWindow({
     width: 470,
     height: 780,
@@ -104,14 +110,14 @@ app.whenReady().then(async () => {
     titleBarStyle: 'hiddenInset',
     trafficLightPosition: { x: 14, y: 18 },
     backgroundColor: process.env.THEME === 'dark' ? '#1b1918' : '#f7f4f1',
-    webPreferences: { preload: path.join(root, 'scripts', 'preview-preload.cjs'), contextIsolation: true },
+    webPreferences: { preload: path.join(dist, 'scripts', 'preview-preload.cjs'), contextIsolation: true },
   })
 
   win.webContents.on('console-message', (d) => console.log('[renderer]', d.level, d.message, d.sourceId || ''))
-  await win.loadFile(path.join(root, 'src', 'renderer', 'index.html'))
+  await win.loadFile(path.join(dist, 'src', 'renderer', 'index.html'))
 
   for (const step of SCRIPT) {
-    if (step.user) {
+    if ('user' in step) {
       await win.webContents.executeJavaScript(
         `(() => {
            const box = document.getElementById('input')

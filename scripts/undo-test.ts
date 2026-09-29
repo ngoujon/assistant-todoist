@@ -1,7 +1,8 @@
 // Qu'est-ce qui s'annule, qu'est-ce qui ne se rattrape pas — et les garde-fous.
-import { TaskRegistry } from '../src/agent/registry.mjs'
-import { TodoistGuard } from '../src/agent/guards.mjs'
-import { ActionJournal } from '../src/agent/journal.mjs'
+import { TaskRegistry } from '../src/agent/registry.ts'
+import { TodoistGuard } from '../src/agent/guards.ts'
+import { ActionJournal } from '../src/agent/journal.ts'
+import type { ToolInput } from '../src/agent/json.ts'
 
 const registry = new TaskRegistry()
 registry.note(JSON.stringify({ tasks: [
@@ -11,18 +12,18 @@ registry.note(JSON.stringify({ tasks: [
 ] }))
 
 let ko = 0
-const check = (label, got, expected) => {
+const check = (label: string, got: boolean, expected: boolean) => {
   if (got !== expected) ko++
   console.log(`${got === expected ? 'ok  ' : 'ECHEC'} ${label.padEnd(34)} -> ${got ? 'annulable' : 'non annulable'}`)
 }
 
 // Chaque cas est joué seul : le journal calcule l'inverse sur l'état d'avant.
-function undoable(toolName, input, resultText = '{}') {
+function undoable(toolName: string, input: ToolInput, resultText = '{}'): boolean {
   const journal = new ActionJournal(registry)
   journal.noteCall('x', toolName, input)
   journal.noteResult('x', true, resultText)
   const recap = journal.closeTurn(false)
-  return recap ? recap.items[0].undoable : false
+  return recap?.items[0]?.undoable ?? false
 }
 
 console.log('--- ce que le récap sait défaire ---')
@@ -54,7 +55,7 @@ j.noteCall('1', 'mcp__todoist__reschedule-tasks', { tasks: [{ id: 'D', date: '20
 j.noteResult('1', true, '{}')
 j.noteCall('2', 'mcp__todoist__update-tasks', { tasks: [{ id: 'D', priority: 'p1' }] })
 j.noteResult('2', true, '{}')
-const message = j.undoMessage(j.closeTurn(false).id)
+const message = j.undoMessage(j.closeTurn(false)?.id ?? '') ?? ''
 const order = [...message.matchAll(/`(mcp__todoist__[a-z-]+)`/g)].map((m) => m[1])
 const expected = ['mcp__todoist__update-tasks', 'mcp__todoist__reschedule-tasks']
 const inOrder = order.join(',') === expected.join(',')

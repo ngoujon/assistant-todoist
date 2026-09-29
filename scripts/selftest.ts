@@ -1,13 +1,20 @@
 // Test d'integration hors Electron : demarre une vraie session agent,
 // envoie un message et verifie la connexion Todoist + une reponse.
-import { AgentSession } from '../src/agent/session.mjs'
+import { AgentSession } from '../src/agent/session.ts'
+import type { AgentEvent } from '../src/shared/types.ts'
 import fs from 'node:fs'
 import os from 'node:os'
 import path from 'node:path'
 
 const workspace = path.join(os.tmpdir(), 'assistant-todoist-selftest')
 fs.mkdirSync(workspace, { recursive: true })
-const seen = { ready: null, text: '', tools: [], recaps: [], done: false }
+const seen = {
+  ready: null as Extract<AgentEvent, { k: 'ready' }> | null,
+  text: '',
+  tools: [] as string[],
+  recaps: [] as Array<Extract<AgentEvent, { k: 'recap' }>>,
+  done: false,
+}
 
 const session = new AgentSession({
   emit: (e) => {

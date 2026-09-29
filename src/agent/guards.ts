@@ -3,6 +3,10 @@
 // manque une metadonnee — mais l'agent se debrouille seul pour la combler : il ne
 // remonte jamais la question a l’utilisateur.
 
+import type { HookCallbackMatcher, HookEvent, HookJSONOutput } from '@anthropic-ai/claude-agent-sdk'
+import { asRecord, toolInput, type TaskInput, type ToolInput } from './json.ts'
+import type { TaskRegistry } from './registry.ts'
+
 const OBSOLETE_LABEL = /^ancien-/i
 const TYPO_LABELS = new Set(['coquille'])
 
@@ -14,57 +18,58 @@ const DECIDE_INSTRUCTIONS =
 const NO_DATE_WANTED = /\b(sans date|pas de date|sans echeance|sans échéance|pas d.echeance|pas d.échéance|backlog|un jour|plus tard|quand j.aurai|reservoir|réservoir)\b/i
 
 export class TodoistGuard {
+  /** Pour savoir si une tâche est récurrente. */
+  registry: TaskRegistry | null
+  /** Texte récent de l’utilisateur, pour reconnaître un backlog assumé. */
+  getUserText: () => string
+  /** Libellés réellement présents dans le compte, alimentés par find-labels. */
+  knownLabels: Set<string> | null = null
   /**
-   * @param {object} registry TaskRegistry, pour savoir si une tâche est récurrente
-   * @param {() => string} getUserText texte récent de l’utilisateur, pour reconnaître un backlog assumé
+   * En veille pendant une annulation : rétablir l'état d'avant, c'est parfois
+   * réécrire une valeur que ces règles refuseraient d'écrire pour la première fois.
    */
-  constructor(registry, getUserText) {
+  suspended = false
+
+  constructor(registry: TaskRegistry | null, getUserText?: () => string) {
     this.registry = registry
     this.getUserText = getUserText || (() => '')
-    /** Libellés réellement présents dans le compte, alimentés par find-labels. */
-    this.knownLabels = null
-    /**
-     * En veille pendant une annulation : rétablir l'état d'avant, c'est parfois
-     * réécrire une valeur que ces règles refuseraient d'écrire pour la première fois.
-     */
-    this.suspended = false
   }
 
-  suspend() { this.suspended = true }
+  suspend(): void { this.suspended = true }
 
-  resume() { this.suspended = false }
+  resume(): void { this.suspended = false }
 
   /** Mémorise les libellés dès que l'agent appelle find-labels. */
-  noteToolResult(toolName, rawText) {
+  noteToolResult(toolName: string, rawText: string): void {
     if (toolName !== 'mcp__todoist__find-labels' || !rawText) return
-    const names = [...String(rawText).matchAll(/"name"\s*:\s*"([^"]+)"/g)].map((m) => m[1])
+    const names = [...String(rawText).matchAll(/"name"\s*:\s*"([^"]+)"/g)].map((m) => m[1]!)
     if (names.length) this.knownLabels = new Set(names.map((n) => n.toLowerCase()))
   }
 
   /** Configuration `hooks` a passer a query(). */
-  hooks() {
-    const deny = (reason) => ({
+  hooks(): Partial<Record<HookEvent, HookCallbackMatcher[]>> {
+    const deny = (reason: string): HookJSONOutput => ({
       hookSpecificOutput: {
         hookEventName: 'PreToolUse',
         permissionDecision: 'deny',
         permissionDecisionReason: reason,
       },
     })
-    const pass = { continue: true }
+    const pass: HookJSONOutput = { continue: true }
 
     return {
       PreToolUse: [
         {
           matcher: 'mcp__todoist__add-tasks',
           hooks: [async (input) => {
-            const reason = this.checkAddTasks(input?.tool_input)
+            const reason = this.checkAddTasks(input.hook_event_name === 'PreToolUse' ? toolInput(input.tool_input) : {})
             return reason ? deny(reason) : pass
           }],
         },
         {
           matcher: 'mcp__todoist__update-tasks',
           hooks: [async (input) => {
-            const reason = this.checkUpdateTasks(input?.tool_input)
+            const reason = this.checkUpdateTasks(input.hook_event_name === 'PreToolUse' ? toolInput(input.tool_input) : {})
             return reason ? deny(reason) : pass
           }],
         },
@@ -74,21 +79,22 @@ export class TodoistGuard {
 
   // ------------------------------------------------------------------ regles
 
-  checkAddTasks(toolInput) {
+  checkAddTasks(input: ToolInput): string | null {
     if (this.suspended) return null
-    const tasks = Array.isArray(toolInput?.tasks) ? toolInput.tasks : []
+    const tasks = Array.isArray(input.tasks) ? (input.tasks as Array<TaskInput | null>) : []
     if (!tasks.length) return null
 
-    if (this.knownLabels === null) {
+    const knownLabels = this.knownLabels
+    if (knownLabels === null) {
       return 'Création bloquée : tu n\'as pas encore lu les libellés du compte. ' +
         'Appelle d\'abord `mcp__todoist__find-labels`, puis applique un libellé existant à chaque tâche. ' +
         'Enchaîne tout seul, sans en parler à l’utilisateur.'
     }
 
-    const problems = []
+    const problems: string[] = []
     for (const task of tasks) {
       const name = task?.content || 'tâche sans nom'
-      const missing = []
+      const missing: string[] = []
 
       if (!task?.priority) missing.push('la priorité (p1, p2, p3 ou p4)')
       if (!task?.duration) missing.push('la durée estimée')
@@ -103,7 +109,7 @@ export class TodoistGuard {
         missing.push('au moins un libellé @ existant')
       } else {
         const stale = labels.filter((l) => OBSOLETE_LABEL.test(l) || TYPO_LABELS.has(l.toLowerCase()))
-        const unknown = labels.filter((l) => !this.knownLabels.has(l.toLowerCase()))
+        const unknown = labels.filter((l) => !knownLabels.has(l.toLowerCase()))
         if (stale.length) {
           problems.push(`« ${name} » : le libellé ${stale.map((l) => `@${l}`).join(', ')} est obsolète, choisis-en un actif.`)
         }
@@ -128,11 +134,11 @@ export class TodoistGuard {
    * les tâches qu'on sait récurrentes : sur une tâche sans date, `update-tasks` est le
    * seul chemin possible — `reschedule-tasks` exige une date existante.
    */
-  checkUpdateTasks(toolInput) {
+  checkUpdateTasks(input: ToolInput): string | null {
     if (this.suspended) return null
-    const tasks = Array.isArray(toolInput?.tasks) ? toolInput.tasks : [toolInput].filter(Boolean)
-    const guilty = tasks.filter((task) => {
-      if (!task || typeof task !== 'object') return false
+    const tasks: unknown[] = Array.isArray(input.tasks) ? input.tasks : [input]
+    const guilty = tasks.map(asRecord).filter((task): task is TaskInput => {
+      if (!task) return false
       const touchesDate = Object.keys(task).some((k) => /^due/i.test(k) || k === 'deadlineDate')
       return touchesDate && this.registry?.task(task.id)?.recurring === true
     })

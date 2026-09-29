@@ -1,14 +1,22 @@
-import { app, BrowserWindow, ipcMain, shell, Menu, nativeTheme } from 'electron'
+import { app, BrowserWindow, ipcMain, shell, Menu, nativeTheme, type MenuItemConstructorOptions } from 'electron'
 import path from 'node:path'
 import fs from 'node:fs'
-import os from 'node:os'
 import { fileURLToPath } from 'node:url'
-import { AgentSession } from './agent/session.mjs'
-import { PROMPT_VERSION } from './agent/prompt.mjs'
+import { AgentSession } from './agent/session.ts'
+import { PROMPT_VERSION } from './agent/prompt.ts'
+import type { RegistrySnapshot } from './agent/registry.ts'
+import type { AgentEvent, ConfigPatch, InitState } from './shared/types.ts'
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url))
 
-const DEFAULT_CONFIG = {
+interface AppConfig {
+  model: string
+  bounds: { width: number, height: number, x?: number, y?: number }
+  lastSessionId: string | null
+  promptVersion: number
+}
+
+const DEFAULT_CONFIG: AppConfig = {
   // L'IA, c'est Claude, par le harnais Claude Code — exactement comme dans le terminal :
   // le CLI se sert de la session déjà ouverte sur la machine, sans clé API à gérer ici.
   model: 'claude-opus-5',
@@ -17,16 +25,16 @@ const DEFAULT_CONFIG = {
   promptVersion: 0,
 }
 
-let config = { ...DEFAULT_CONFIG }
+let config: AppConfig = { ...DEFAULT_CONFIG }
 let configPath = ''
 let workspace = ''
-let win = null
-let session = null
+let win: BrowserWindow | null = null
+let session: AgentSession | null = null
 let quitting = false
 
 // ------------------------------------------------------------------ config
 
-function loadConfig() {
+function loadConfig(): void {
   configPath = path.join(app.getPath('userData'), 'config.json')
   try {
     config = { ...DEFAULT_CONFIG, ...JSON.parse(fs.readFileSync(configPath, 'utf8')) }
@@ -42,8 +50,9 @@ function loadConfig() {
  * taille de contexte) survivraient à la mise à jour et l'app demanderait à Claude un
  * modèle qui n'existe pas. On les retire plutôt que de laisser l'ancien choix décider.
  */
-function migrateConfig() {
+function migrateConfig(): void {
   let changed = false
+  const stored = config as AppConfig & Record<string, unknown>
   if (!/^claude[-.]/i.test(String(config.model || ''))) {
     config.model = DEFAULT_CONFIG.model
     changed = true
@@ -51,16 +60,16 @@ function migrateConfig() {
   // Réglages d'une époque où l'inférence tournait sur un serveur local, et d'un mode
   // autonome qui n'existe plus : plus rien ne les lit.
   for (const clef of ['endpoint', 'contextTokens', 'autoTodoist']) {
-    if (clef in config) {
-      delete config[clef]
+    if (clef in stored) {
+      delete stored[clef]
       changed = true
     }
   }
   if (changed) saveConfig()
 }
 
-let saveTimer = null
-function saveConfig() {
+let saveTimer: NodeJS.Timeout | undefined
+function saveConfig(): void {
   clearTimeout(saveTimer)
   saveTimer = setTimeout(() => {
     try {
@@ -73,9 +82,9 @@ function saveConfig() {
 // --------------------------------------------------- memoire des taches vues
 
 let tasksPath = ''
-let tasksSaveTimer = null
+let tasksSaveTimer: NodeJS.Timeout | undefined
 
-function loadTasksSnapshot() {
+function loadTasksSnapshot(): Partial<RegistrySnapshot> | null {
   tasksPath = path.join(app.getPath('userData'), 'taches-connues.json')
   try {
     return JSON.parse(fs.readFileSync(tasksPath, 'utf8'))
@@ -84,18 +93,19 @@ function loadTasksSnapshot() {
   }
 }
 
-function saveTasksSnapshot() {
-  if (!session?.registry?.dirty) return
+function saveTasksSnapshot(): void {
+  const registry = session?.registry
+  if (!registry?.dirty) return
   clearTimeout(tasksSaveTimer)
   tasksSaveTimer = setTimeout(() => {
     try {
-      fs.writeFileSync(tasksPath, JSON.stringify(session.registry.snapshot()))
-      session.registry.dirty = false
+      fs.writeFileSync(tasksPath, JSON.stringify(registry.snapshot()))
+      registry.dirty = false
     } catch {}
   }, 500)
 }
 
-function ensureWorkspace() {
+function ensureWorkspace(): void {
   workspace = path.join(app.getPath('userData'), 'Espace de travail')
   fs.mkdirSync(workspace, { recursive: true })
   const readme = path.join(workspace, 'LISEZ-MOI.md')
@@ -112,9 +122,9 @@ function ensureWorkspace() {
 
 // ------------------------------------------------------------------ fenetre
 
-function createWindow() {
+function createWindow(): void {
   const { width, height, x, y } = config.bounds || DEFAULT_CONFIG.bounds
-  win = new BrowserWindow({
+  const window = new BrowserWindow({
     width, height, x, y,
     minWidth: 380,
     minHeight: 480,
@@ -133,28 +143,30 @@ function createWindow() {
     },
   })
 
-  win.webContents.on('did-start-loading', () => { rendererReady = false })
+  win = window
+
+  window.webContents.on('did-start-loading', () => { rendererReady = false })
   if (process.env.ASSISTANT_DEBUG) {
-    win.webContents.on('console-message', (d) => {
+    window.webContents.on('console-message', (d) => {
       console.log('[renderer]', d.level, d.message, `${d.sourceId || ''}:${d.lineNumber || ''}`)
     })
   }
-  win.loadFile(path.join(__dirname, 'renderer', 'index.html'))
-  win.once('ready-to-show', () => win.show())
+  void window.loadFile(path.join(__dirname, 'renderer', 'index.html'))
+  window.once('ready-to-show', () => window.show())
 
-  win.on('close', (e) => {
-    if (!quitting) { e.preventDefault(); win.hide() }
+  window.on('close', (e) => {
+    if (!quitting) { e.preventDefault(); window.hide() }
   })
   const remember = () => {
-    if (!win || win.isDestroyed() || win.isMinimized()) return
-    config.bounds = win.getBounds()
+    if (window.isDestroyed() || window.isMinimized()) return
+    config.bounds = window.getBounds()
     saveConfig()
   }
-  win.on('resize', remember)
-  win.on('move', remember)
+  window.on('resize', remember)
+  window.on('move', remember)
 
-  win.webContents.setWindowOpenHandler(({ url }) => {
-    shell.openExternal(url)
+  window.webContents.setWindowOpenHandler(({ url }) => {
+    void shell.openExternal(url)
     return { action: 'deny' }
   })
 }
@@ -162,9 +174,9 @@ function createWindow() {
 // Le renderer n'ecoute qu'apres son chargement : on met les evenements de
 // demarrage en attente pour ne pas perdre l'etat de connexion.
 let rendererReady = false
-const pendingEvents = []
+const pendingEvents: AgentEvent[] = []
 
-function emit(evt) {
+function emit(evt: AgentEvent): void {
   if (process.env.ASSISTANT_DEBUG) console.log('[emit]', evt.k, rendererReady ? 'direct' : 'en attente')
   if (!rendererReady) {
     pendingEvents.push(evt)
@@ -174,7 +186,7 @@ function emit(evt) {
   if (win && !win.isDestroyed()) win.webContents.send('agent', evt)
 }
 
-function flushEvents() {
+function flushEvents(): void {
   if (process.env.ASSISTANT_DEBUG) console.log('[emit] flush de', pendingEvents.length, 'evenement(s)')
   rendererReady = true
   const queued = pendingEvents.splice(0, pendingEvents.length)
@@ -185,8 +197,8 @@ function flushEvents() {
 
 // ---------------------------------------------------------------------- IPC
 
-function wireIpc() {
-  ipcMain.handle('app:init', () => {
+function wireIpc(): void {
+  ipcMain.handle('app:init', (): InitState => {
     setImmediate(flushEvents)
     return {
       config: { model: config.model },
@@ -195,36 +207,38 @@ function wireIpc() {
     }
   })
 
-  ipcMain.on('chat:send', (_e, text) => {
-    if (!text?.trim()) return
-    session.send(text)
+  ipcMain.on('chat:send', (_e, text: unknown) => {
+    if (typeof text !== 'string' || !text.trim()) return
+    session?.send(text)
   })
 
-  ipcMain.on('chat:interrupt', () => { session.interrupt() })
+  ipcMain.on('chat:interrupt', () => { void session?.interrupt() })
 
   ipcMain.on('chat:new', () => {
     config.lastSessionId = null
     saveConfig()
-    session.start({})
+    session?.start({})
   })
 
-  ipcMain.on('chat:config', (_e, patch) => {
-    Object.assign(config, patch)
+  // La page ne règle que le modèle : rien d'autre de la config ne lui est ouvert.
+  ipcMain.on('chat:config', (_e, patch: ConfigPatch) => {
+    if (typeof patch?.model !== 'string' || !patch.model) return
+    config.model = patch.model
     saveConfig()
-    if (patch.model) session.setModel(patch.model)
+    void session?.setModel(patch.model)
   })
 
   // Le récap donne l'identifiant ; la session sait quels appels inverses rejouer.
-  ipcMain.handle('chat:undo', (_e, recapId) => session.undo(recapId))
+  ipcMain.handle('chat:undo', (_e, recapId: unknown) => typeof recapId === 'string' && session ? session.undo(recapId) : false)
 
-  ipcMain.on('app:open-workspace', () => shell.openPath(workspace))
-  ipcMain.on('app:open-external', (_e, url) => {
-    if (/^https?:\/\//i.test(url)) shell.openExternal(url)
+  ipcMain.on('app:open-workspace', () => { void shell.openPath(workspace) })
+  ipcMain.on('app:open-external', (_e, url: unknown) => {
+    if (typeof url === 'string' && /^https?:\/\//i.test(url)) void shell.openExternal(url)
   })
 }
 
-function buildMenu() {
-  const template = [
+function buildMenu(): void {
+  const template: MenuItemConstructorOptions[] = [
     {
       label: app.name,
       submenu: [
@@ -242,16 +256,16 @@ function buildMenu() {
         {
           label: 'Nouvelle conversation',
           accelerator: 'CmdOrCtrl+N',
-          click: () => { session.start({}); emit({ k: 'cleared' }) },
+          click: () => { session?.start({}); emit({ k: 'cleared' }) },
         },
         {
           // Pas d'accelerateur « Esc » : la touche est traitee dans l'interface.
           label: 'Interrompre',
           accelerator: 'CmdOrCtrl+.',
-          click: () => session.interrupt(),
+          click: () => { void session?.interrupt() },
         },
         { type: 'separator' },
-        { label: 'Ouvrir l\'espace de travail', click: () => shell.openPath(workspace) },
+        { label: 'Ouvrir l\'espace de travail', click: () => { void shell.openPath(workspace) } },
       ],
     },
     { role: 'editMenu', label: 'Édition' },
@@ -277,7 +291,7 @@ if (!app.requestSingleInstanceLock()) {
     if (win) { win.show(); win.focus() }
   })
 
-  app.whenReady().then(() => {
+  void app.whenReady().then(() => {
     app.setName('Assistant Todoist')
     nativeTheme.themeSource = 'system'
     loadConfig()
@@ -286,7 +300,7 @@ if (!app.requestSingleInstanceLock()) {
     buildMenu()
     wireIpc()
 
-    session = new AgentSession({
+    const agent = new AgentSession({
       emit: (evt) => {
         if (evt.k === 'ready' && evt.sessionId) {
           config.lastSessionId = evt.sessionId
@@ -301,8 +315,9 @@ if (!app.requestSingleInstanceLock()) {
     })
     // Filet de securite : une panne au demarrage de l'agent doit se voir dans l'interface,
     // pas seulement dans la console.
+    session = agent
     process.on('unhandledRejection', (err) => {
-      emit({ k: 'error', message: `Agent indisponible : ${String(err?.message || err)}` })
+      emit({ k: 'error', message: `Agent indisponible : ${err instanceof Error ? err.message : String(err)}` })
       emit({ k: 'status', state: 'idle' })
     })
 
@@ -315,7 +330,7 @@ if (!app.requestSingleInstanceLock()) {
       config.lastSessionId = null
       saveConfig()
     }
-    session.start({ resume: rulesChanged ? undefined : config.lastSessionId || undefined })
+    agent.start({ resume: rulesChanged ? undefined : config.lastSessionId || undefined })
 
     app.on('activate', () => {
       if (win) { win.show(); win.focus() }

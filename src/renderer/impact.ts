@@ -1,24 +1,29 @@
 // Dessine l'impact d'un déplacement : la journée avant / après, à l'échelle,
 // avec les chevauchements que le changement introduit.
 
-const el = (tag, cls, text) => {
+import type { Impact, ImpactBlock, ImpactConflict, ImpactDay } from '../shared/types.ts'
+
+/** Un bloc horaire : les blocs « journée » sont écartés avant le placement. */
+type TimedBlock = ImpactBlock & { start: number, end: number }
+
+const el = (tag: string, cls?: string | null, text?: string | null): HTMLElement => {
   const node = document.createElement(tag)
   if (cls) node.className = cls
   if (text != null) node.textContent = text
   return node
 }
 
-const hhmm = (minutes) => {
+const hhmm = (minutes: number): string => {
   const h = Math.floor(minutes / 60)
   const m = minutes % 60
   return m ? `${h}h${String(m).padStart(2, '0')}` : `${h}h`
 }
 
-export function renderImpact(impact) {
+export function renderImpact(impact: Impact | null | undefined): HTMLElement | null {
   if (!impact?.days?.length) return null
   const root = el('div', 'impact')
 
-  const clashing = new Set()
+  const clashing = new Set<string>()
   for (const conflict of impact.conflicts || []) {
     clashing.add(conflict.moved)
     clashing.add(conflict.against)
@@ -35,7 +40,7 @@ export function renderImpact(impact) {
   return root
 }
 
-function renderDay(day, clashing) {
+function renderDay(day: ImpactDay, clashing: Set<string>): HTMLElement {
   const box = el('div', 'imp-day')
   box.appendChild(el('div', 'imp-label', day.label))
 
@@ -58,14 +63,14 @@ function renderDay(day, clashing) {
 }
 
 /** Graduation horaire : toutes les heures, ou toutes les deux si la plage est large. */
-function hourMarks(day) {
+function hourMarks(day: ImpactDay): number[] {
   const step = day.to - day.from > 8 * 60 ? 120 : 60
-  const marks = []
+  const marks: number[] = []
   for (let m = Math.ceil(day.from / step) * step; m <= day.to; m += step) marks.push(m)
   return marks
 }
 
-function renderHours(day, height) {
+function renderHours(day: ImpactDay, height: number): HTMLElement {
   const col = el('div', 'imp-hours')
   col.appendChild(el('div', 'imp-head', ''))
   const track = el('div', 'imp-track')
@@ -83,7 +88,7 @@ function renderHours(day, height) {
   return col
 }
 
-function renderColumn(title, day, blocks, clashing, highlight, height) {
+function renderColumn(title: string, day: ImpactDay, blocks: ImpactBlock[], clashing: Set<string>, highlight: boolean, height: number): HTMLElement {
   const col = el('div', 'imp-col')
   col.appendChild(el('div', 'imp-head', title))
   const track = el('div', 'imp-track')
@@ -95,11 +100,11 @@ function renderColumn(title, day, blocks, clashing, highlight, height) {
     track.appendChild(line)
   }
 
-  const timed = blocks.filter((b) => !b.allDay)
+  const timed = blocks.filter((b): b is TimedBlock => !b.allDay && b.start != null && b.end != null)
   const layout = lanes(timed)
   for (const block of timed) {
     const share = ((block.end - block.start) / (day.to - day.from)) * 100
-    const { lane, count } = layout.get(block)
+    const { lane, count } = layout.get(block) ?? { lane: 0, count: 1 }
     const node = el('div', `imp-block ${block.kind}`)
     if (highlight && clashing.has(block.name)) node.classList.add('clash')
     // Sous ~22 px un bloc ne peut porter que son nom : on lui garde une hauteur lisible.
@@ -124,10 +129,10 @@ function renderColumn(title, day, blocks, clashing, highlight, height) {
 }
 
 /** Répartit les blocs qui se chevauchent en colonnes côte à côte. */
-function lanes(blocks) {
-  const layout = new Map()
+function lanes(blocks: TimedBlock[]): Map<TimedBlock, { lane: number, count: number }> {
+  const layout = new Map<TimedBlock, { lane: number, count: number }>()
   const sorted = [...blocks].sort((a, b) => a.start - b.start)
-  let cluster = []
+  let cluster: Array<{ block: TimedBlock, lane: number, end: number }> = []
   let clusterEnd = -Infinity
 
   const close = () => {
@@ -149,12 +154,12 @@ function lanes(blocks) {
   return layout
 }
 
-function position(minutes, day) {
+function position(minutes: number, day: ImpactDay): number {
   return ((minutes - day.from) / (day.to - day.from)) * 100
 }
 
-function dedupe(conflicts) {
-  const seen = new Set()
+function dedupe(conflicts: ImpactConflict[]): ImpactConflict[] {
+  const seen = new Set<string>()
   return conflicts.filter((c) => {
     const key = [c.moved, c.against].sort().join('|')
     if (seen.has(key)) return false

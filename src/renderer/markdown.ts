@@ -1,10 +1,10 @@
 // Rendu Markdown minimal et sûr : on échappe tout le texte, puis on ré-introduit
 // uniquement les balises que l'on génère nous-mêmes.
 
-const ESC = { '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;' }
-const escapeHtml = (s) => String(s).replace(/[&<>"']/g, (c) => ESC[c])
+const ESC: Record<string, string> = { '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;' }
+const escapeHtml = (s: unknown) => String(s).replace(/[&<>"']/g, (c) => ESC[c] ?? c)
 
-function emphasis(text) {
+function emphasis(text: string): string {
   return escapeHtml(text)
     .replace(/\[([^\]]+)\]\((https?:\/\/[^\s)]+)\)/g, '<a href="$2" data-ext>$1</a>')
     .replace(/(^|[\s(])(https?:\/\/[^\s<)]+)/g, '$1<a href="$2" data-ext>$2</a>')
@@ -19,23 +19,23 @@ function emphasis(text) {
 const OPEN = '\uE000'
 const CLOSE = '\uE001'
 
-function inline(text) {
-  const codes = []
-  const masked = String(text).replace(/`([^`\n]+)`/g, (_m, code) => {
+function inline(text: string): string {
+  const codes: string[] = []
+  const masked = String(text).replace(/`([^`\n]+)`/g, (_m, code: string) => {
     codes.push(code)
     return `${OPEN}${codes.length - 1}${CLOSE}`
   })
   return emphasis(masked).replace(
     new RegExp(`${OPEN}(\\d+)${CLOSE}`, 'g'),
-    (_m, i) => `<code>${escapeHtml(codes[Number(i)])}</code>`,
+    (_m, i: string) => `<code>${escapeHtml(codes[Number(i)])}</code>`,
   )
 }
 
-export function renderMarkdown(src) {
+export function renderMarkdown(src: string): string {
   const lines = String(src || '').replace(/\r\n/g, '\n').split('\n')
-  const html = []
+  const html: string[] = []
   let i = 0
-  let list = null
+  let list: 'ul' | 'ol' | null = null
 
   const closeList = () => {
     if (list) {
@@ -45,17 +45,17 @@ export function renderMarkdown(src) {
   }
 
   while (i < lines.length) {
-    const line = lines[i]
+    const line = lines[i] ?? ''
 
     // bloc de code
     const fence = line.match(/^\s*```(\w*)\s*$/)
     if (fence) {
       closeList()
       const lang = fence[1] || ''
-      const buf = []
+      const buf: string[] = []
       i++
-      while (i < lines.length && !/^\s*```\s*$/.test(lines[i])) {
-        buf.push(lines[i])
+      while (i < lines.length && !/^\s*```\s*$/.test(lines[i]!)) {
+        buf.push(lines[i]!)
         i++
       }
       i++
@@ -73,8 +73,8 @@ export function renderMarkdown(src) {
     const heading = line.match(/^(#{1,4})\s+(.*)$/)
     if (heading) {
       closeList()
-      const level = Math.min(heading[1].length + 2, 6)
-      html.push(`<h${level}>${inline(heading[2])}</h${level}>`)
+      const level = Math.min(heading[1]!.length + 2, 6)
+      html.push(`<h${level}>${inline(heading[2]!)}</h${level}>`)
       i++
       continue
     }
@@ -89,10 +89,10 @@ export function renderMarkdown(src) {
     const quote = line.match(/^>\s?(.*)$/)
     if (quote) {
       closeList()
-      const buf = [quote[1]]
+      const buf = [quote[1]!]
       i++
-      while (i < lines.length && /^>\s?/.test(lines[i])) {
-        buf.push(lines[i].replace(/^>\s?/, ''))
+      while (i < lines.length && /^>\s?/.test(lines[i]!)) {
+        buf.push(lines[i]!.replace(/^>\s?/, ''))
         i++
       }
       html.push(`<blockquote>${inline(buf.join(' '))}</blockquote>`)
@@ -106,8 +106,8 @@ export function renderMarkdown(src) {
         html.push('<ul class="tasks">')
         list = 'ul'
       }
-      const done = task[1].toLowerCase() === 'x'
-      html.push(`<li class="task${done ? ' done' : ''}"><span class="box">${done ? '✓' : ''}</span>${inline(task[2])}</li>`)
+      const done = task[1]!.toLowerCase() === 'x'
+      html.push(`<li class="task${done ? ' done' : ''}"><span class="box">${done ? '✓' : ''}</span>${inline(task[2]!)}</li>`)
       i++
       continue
     }
@@ -119,7 +119,7 @@ export function renderMarkdown(src) {
         html.push('<ul>')
         list = 'ul'
       }
-      html.push(`<li>${inline(bullet[1])}</li>`)
+      html.push(`<li>${inline(bullet[1]!)}</li>`)
       i++
       continue
     }
@@ -131,7 +131,7 @@ export function renderMarkdown(src) {
         html.push('<ol>')
         list = 'ol'
       }
-      html.push(`<li>${inline(numbered[1])}</li>`)
+      html.push(`<li>${inline(numbered[1]!)}</li>`)
       i++
       continue
     }
@@ -140,8 +140,8 @@ export function renderMarkdown(src) {
     closeList()
     const buf = [line]
     i++
-    while (i < lines.length && lines[i].trim() && !/^\s*(```|#{1,4}\s|[-*+]\s|\d+[.)]\s|>)/.test(lines[i])) {
-      buf.push(lines[i])
+    while (i < lines.length && lines[i]!.trim() && !/^\s*(```|#{1,4}\s|[-*+]\s|\d+[.)]\s|>)/.test(lines[i]!)) {
+      buf.push(lines[i]!)
       i++
     }
     html.push(`<p>${inline(buf.join('\n')).replace(/\n/g, '<br>')}</p>`)
