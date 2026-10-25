@@ -28,6 +28,8 @@ Un clic l'ouvre, la croix la masque (elle reste dans le Dock), `⌘Q` la quitte.
 | `esc` | interrompre l'agent |
 | `⌘.` | interrompre l'agent |
 | `⌘N` | nouvelle conversation |
+| `⌘+` / `⌘-` | agrandir / réduire l'affichage |
+| `⌘0` | taille réelle |
 
 À l'ouverture, l'assistant **reprend la conversation précédente** : il se souvient de ce
 que vous vous êtes dit ce matin. Le bouton `+` repart de zéro.

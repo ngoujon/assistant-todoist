@@ -12,6 +12,8 @@ const __dirname = path.dirname(fileURLToPath(import.meta.url))
 interface AppConfig {
   model: string
   bounds: { width: number, height: number, x?: number, y?: number }
+  /** Niveau de zoom d'Electron, en crans (0 = taille réelle). */
+  zoom: number
   lastSessionId: string | null
   promptVersion: number
   /**
@@ -26,6 +28,7 @@ const DEFAULT_CONFIG: AppConfig = {
   // le CLI se sert de la session déjà ouverte sur la machine, sans clé API à gérer ici.
   model: 'claude-opus-5',
   bounds: { width: 470, height: 780 },
+  zoom: 0,
   lastSessionId: null,
   promptVersion: 0,
   ignoredLabels: [],
@@ -168,6 +171,15 @@ function createWindow(): void {
   win = window
 
   window.webContents.on('did-start-loading', () => { rendererReady = false })
+  // Un changement de page remet le zoom à zéro : on le repose à chaque chargement.
+  window.webContents.on('did-finish-load', () => window.webContents.setZoomLevel(config.zoom || 0))
+  window.webContents.on('before-input-event', (e, input) => {
+    const steps = zoomFromKey(input)
+    if (steps === null) return
+    e.preventDefault()
+    if (steps === 0) applyZoom(0)
+    else zoomBy(steps)
+  })
   if (process.env.ASSISTANT_DEBUG) {
     window.webContents.on('console-message', (d) => {
       console.log('[renderer]', d.level, d.message, `${d.sourceId || ''}:${d.lineNumber || ''}`)
@@ -197,6 +209,38 @@ function createWindow(): void {
     e.preventDefault()
     if (/^https?:\/\//i.test(url)) void shell.openExternal(url)
   })
+}
+
+// --------------------------------------------------------------------- zoom
+
+// Le zoom d'Electron est logarithmique : un cran vaut 20 % de plus. On borne
+// pour que l'interface reste utilisable, et on garde le réglage d'une fois sur l'autre.
+const ZOOM_MIN = -4
+const ZOOM_MAX = 6
+
+function applyZoom(steps: number): void {
+  const n = Math.max(ZOOM_MIN, Math.min(ZOOM_MAX, Math.round(steps)))
+  config.zoom = n
+  if (win && !win.isDestroyed()) win.webContents.setZoomLevel(n)
+  saveConfig()
+}
+
+function zoomBy(delta: number): void {
+  applyZoom((config.zoom || 0) + delta)
+}
+
+/**
+ * Les touches de zoom, lues avant la page : ⌘= comme ⌘+ (le « + » d'un clavier
+ * français demande Maj), ⌘−, ⌘0 et le pavé numérique. Un menu ne porte qu'un
+ * raccourci, d'où ce rattrapage. Renvoie +1, -1, 0 (taille réelle) ou null.
+ */
+function zoomFromKey(input: Electron.Input): number | null {
+  if (input.type !== 'keyDown' || !(input.meta || input.control) || input.alt) return null
+  const { key, code } = input
+  if (key === '+' || key === '=' || code === 'NumpadAdd') return +1
+  if (key === '-' || key === '_' || code === 'NumpadSubtract') return -1
+  if (key === '0' || code === 'Digit0' || code === 'Numpad0') return 0
+  return null
 }
 
 // Le renderer n'ecoute qu'apres son chargement : on met les evenements de
@@ -297,6 +341,16 @@ function buildMenu(): void {
       ],
     },
     { role: 'editMenu', label: 'Édition' },
+    {
+      label: 'Affichage',
+      submenu: [
+        // Les touches sont lues avant la page (voir zoomFromKey) : ces raccourcis
+        // ne servent qu'à les afficher dans le menu.
+        { label: 'Agrandir', accelerator: 'CmdOrCtrl+Plus', click: () => zoomBy(+1) },
+        { label: 'Réduire', accelerator: 'CmdOrCtrl+-', click: () => zoomBy(-1) },
+        { label: 'Taille réelle', accelerator: 'CmdOrCtrl+0', click: () => applyZoom(0) },
+      ],
+    },
     {
       label: 'Fenêtre',
       submenu: [
