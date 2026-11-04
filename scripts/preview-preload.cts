@@ -7,7 +7,8 @@ let listener: (evt: AgentEvent) => void = () => {}
 
 const api: AssistantApi & { _fire(evt: AgentEvent): void } = {
   init: async () => ({
-    config: { model: 'claude-opus-5' },
+    config: { model: 'claude-opus-5-5' },
+    recentPrompts: ['Décale tâche A à demain', 'Qu\'est-ce qui traîne dans le projet X ?'],
     workspace: '/tmp',
     version: '1.0.0',
   }),

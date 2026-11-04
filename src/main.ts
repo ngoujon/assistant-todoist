@@ -21,17 +21,79 @@ interface AppConfig {
    * ils vivent dans config.json, sur la machine, jamais dans le dépôt.
    */
   ignoredLabels: string[]
+  /** Dernières demandes envoyées, la plus récente d'abord : local, jamais dans le dépôt. */
+  recentPrompts: string[]
 }
 
 const DEFAULT_CONFIG: AppConfig = {
   // L'IA, c'est Claude, par le harnais Claude Code — exactement comme dans le terminal :
   // le CLI se sert de la session déjà ouverte sur la machine, sans clé API à gérer ici.
-  model: 'claude-opus-5',
+  model: 'claude-opus-5-5',
   bounds: { width: 470, height: 780 },
   zoom: 0,
   lastSessionId: null,
   promptVersion: 0,
   ignoredLabels: [],
+  recentPrompts: [],
+}
+
+const MODEL_SUCCESSORS: Record<string, string> = {
+  'claude-opus-5': 'claude-opus-5-5',
+  'claude-sonnet-5': 'claude-sonnet-5-5',
+  'claude-haiku-4-5-20251001': 'claude-haiku-5-5',
+  'claude-haiku-4-5': 'claude-haiku-5-5',
+  'claude-fable-5': 'claude-fable-5-1',
+}
+
+/** Combien de demandes récentes on garde pour les boutons de l'accueil. */
+const RECENT_MAX = 6
+
+/** Retient une demande en tête de liste, sans doublon (casse et espaces ignorés). */
+function rememberPrompt(text: string): void {
+  const clean = text.trim().replace(/\s+/g, ' ')
+  // Une longue consigne ne fait pas un bon bouton : on ne garde que les demandes courtes.
+  if (!clean || clean.length > 140) return
+  const key = clean.toLowerCase()
+  config.recentPrompts = [clean, ...config.recentPrompts.filter((p) => p.toLowerCase() !== key)].slice(0, RECENT_MAX)
+  saveConfig()
+}
+
+/**
+ * Premier lancement après la mise à jour : la liste est vide, alors on la remplit
+ * avec les dernières demandes trouvées dans l'historique des conversations que
+ * Claude Code garde pour l'espace de travail. Tout reste sur la machine.
+ */
+function seedRecentPrompts(): void {
+  if (config.recentPrompts.length) return
+  try {
+    const base = process.env.CLAUDE_CONFIG_DIR || path.join(app.getPath('home'), '.claude')
+    const dir = path.join(base, 'projects', workspace.replace(/[^a-zA-Z0-9]/g, '-'))
+    const files = fs.readdirSync(dir)
+      .filter((f) => f.endsWith('.jsonl'))
+      .map((f) => ({ f, t: fs.statSync(path.join(dir, f)).mtimeMs }))
+      .sort((a, b) => b.t - a.t)
+      .slice(0, 10)
+    const found: { ts: string, text: string }[] = []
+    for (const { f } of files) {
+      for (const line of fs.readFileSync(path.join(dir, f), 'utf8').split('\n')) {
+        if (!line.includes('"type":"user"')) continue
+        try {
+          const entry = JSON.parse(line)
+          if (entry.type !== 'user' || entry.isMeta) continue
+          const content = entry.message?.content
+          const text = typeof content === 'string'
+            ? content
+            : Array.isArray(content) && content.every((b) => b?.type === 'text')
+              ? content.map((b) => b.text).join(' ')
+              : ''
+          if (text.trim() && !text.trimStart().startsWith('<')) found.push({ ts: String(entry.timestamp || ''), text })
+        } catch {}
+      }
+    }
+    // Du plus ancien au plus récent : chaque demande retenue passe devant la précédente.
+    found.sort((a, b) => a.ts.localeCompare(b.ts))
+    for (const { text } of found) rememberPrompt(text)
+  } catch {}
 }
 
 let config: AppConfig = { ...DEFAULT_CONFIG }
@@ -64,6 +126,17 @@ function migrateConfig(): void {
   const stored = config as AppConfig & Record<string, unknown>
   if (!/^claude[-.]/i.test(String(config.model || ''))) {
     config.model = DEFAULT_CONFIG.model
+    changed = true
+  }
+  // Un modèle d'une génération que le menu ne propose plus passe à son successeur,
+  // sinon le menu s'afficherait vide.
+  const successor = MODEL_SUCCESSORS[config.model]
+  if (successor) {
+    config.model = successor
+    changed = true
+  }
+  if (!Array.isArray(config.recentPrompts)) {
+    config.recentPrompts = []
     changed = true
   }
   // Réglages d'une époque où l'inférence tournait sur un serveur local, et d'un mode
@@ -274,6 +347,7 @@ function wireIpc(): void {
     setImmediate(flushEvents)
     return {
       config: { model: config.model },
+      recentPrompts: [...config.recentPrompts],
       workspace,
       version: app.getVersion(),
     }
@@ -281,6 +355,7 @@ function wireIpc(): void {
 
   ipcMain.on('chat:send', (_e, text: unknown) => {
     if (typeof text !== 'string' || !text.trim()) return
+    rememberPrompt(text)
     session?.send(text)
   })
 
@@ -378,6 +453,7 @@ if (!app.requestSingleInstanceLock()) {
     nativeTheme.themeSource = 'system'
     loadConfig()
     ensureWorkspace()
+    seedRecentPrompts()
     createWindow()
     buildMenu()
     wireIpc()

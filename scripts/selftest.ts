@@ -30,7 +30,7 @@ const session = new AgentSession({
     if (e.k === 'result') seen.done = true
   },
   // Sonnet plutot qu'Opus : le test ne juge que la plomberie, pas la finesse.
-  getConfig: () => ({ model: 'claude-sonnet-5' }),
+  getConfig: () => ({ model: 'claude-sonnet-5-5' }),
   workspace,
 })
 

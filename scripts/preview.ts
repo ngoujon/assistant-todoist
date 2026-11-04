@@ -16,7 +16,7 @@ type Step = { user: string } | { evt: AgentEvent }
 
 const SCRIPT: Step[] = [
   { user: 'Ajoute « tâche E » cet aprem' },
-  { evt: { k: 'ready', sessionId: 'x', model: 'claude-opus-5', todoist: 'connected' } },
+  { evt: { k: 'ready', sessionId: 'x', model: 'claude-opus-5-5', todoist: 'connected' } },
   { evt: { k: 'tool-use', id: 't0', name: 'mcp__todoist__find-labels', input: {} } },
   { evt: { k: 'tool-result', id: 't0', name: 'mcp__todoist__find-labels', ok: true, preview: '5 libellés' } },
   { evt: { k: 'tool-use', id: 't1', name: 'mcp__todoist__find-tasks-by-date', input: { startDate: 'today' } } },

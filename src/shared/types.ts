@@ -91,6 +91,8 @@ export interface ConfigPatch {
 
 export interface InitState {
   config: { model: string }
+  /** Dernières demandes, la plus récente d'abord. */
+  recentPrompts: string[]
   workspace: string
   version: string
 }
