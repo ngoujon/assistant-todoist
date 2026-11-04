@@ -551,13 +551,15 @@ main::-webkit-scrollbar-track { background: transparent; }
 }
 .chip:hover { border-color: var(--accent); background: var(--accent-soft); }
 .chip:active { transform: scale(0.96); }
-.chip.recent {
+.chip.frequent {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
   max-width: 100%;
-  overflow: hidden;
-  text-overflow: ellipsis;
-  white-space: nowrap;
 }
-.chip.recent::before { content: '↺ '; color: var(--text-faint); }
+.chip.frequent .chip-text { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.chip.frequent .chip-count { font-size: 10.5px; color: var(--text-faint); flex: 0 0 auto; }
+.chip.starter .chip-text::after { content: ' …'; color: var(--text-faint); }
 .chips-label {
   font-size: 11px;
   font-weight: 600;

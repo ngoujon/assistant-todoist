@@ -89,10 +89,17 @@ export interface ConfigPatch {
   model?: string
 }
 
+/** Un bouton de l'accueil, tiré des demandes les plus fréquentes. */
+export interface Suggestion {
+  label: string
+  text: string
+  /** true : s'envoie tel quel ; false : préremplit le champ, à compléter. */
+  send: boolean
+  count: number
+}
+
 export interface InitState {
   config: { model: string }
-  /** Dernières demandes, la plus récente d'abord. */
-  recentPrompts: string[]
   workspace: string
   version: string
 }
@@ -100,6 +107,7 @@ export interface InitState {
 /** Ce que `preload.cts` expose à la page sous `window.assistant`. */
 export interface AssistantApi {
   init(): Promise<InitState>
+  suggestions(): Promise<Suggestion[]>
   send(text: string): void
   interrupt(): void
   newChat(): void

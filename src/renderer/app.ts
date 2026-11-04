@@ -1,4 +1,4 @@
-import type { AgentEvent } from '../shared/types.ts'
+import type { AgentEvent, Suggestion } from '../shared/types.ts'
 import { renderMarkdown } from './markdown.ts'
 import { renderImpact } from './impact.ts'
 
@@ -63,7 +63,7 @@ function clearThread(): void {
   currentText = null
   currentThinking = null
   toolEls = new Map()
-  showWelcome()
+  void showWelcome()
 }
 
 // ------------------------------------------------------------------ accueil
@@ -75,47 +75,57 @@ const SUGGESTIONS = [
   'Ce qui traîne depuis trop longtemps',
 ]
 
-/** Combien de demandes récentes on affiche en boutons. */
-const RECENT_SHOWN = 4
-
-/** Dernières demandes, la plus récente d'abord ; le processus principal les garde sur disque. */
-let recentPrompts: string[] = []
-
-/** Même règle que le processus principal, pour que l'accueil suive sans recharger. */
-function rememberPrompt(text: string): void {
-  const clean = text.trim().replace(/\s+/g, ' ')
-  if (!clean || clean.length > 140) return
-  const key = clean.toLowerCase()
-  recentPrompts = [clean, ...recentPrompts.filter((p) => p.toLowerCase() !== key)].slice(0, 6)
+/** Un bouton qui préremplit le champ : on complète la demande, puis on envoie. */
+function prefill(text: string): void {
+  input.value = text
+  autoGrow()
+  refreshComposer()
+  input.focus()
+  input.setSelectionRange(text.length, text.length)
 }
 
-function chipRow(items: string[], cls: string): HTMLElement {
+function frequentRow(items: Suggestion[]): HTMLElement {
   const chips = el('div', 'chips')
   for (const s of items) {
-    const c = el('button', `chip ${cls}`, s)
-    c.title = s
+    const c = el('button', `chip frequent${s.send ? '' : ' starter'}`)
+    c.appendChild(el('span', 'chip-text', s.label))
+    c.appendChild(el('span', 'chip-count', `${s.count}×`))
+    c.title = s.send ? `Envoyer « ${s.text} »` : 'Préremplit le champ : complète puis envoie'
+    c.addEventListener('click', () => (s.send ? submit(s.text) : prefill(s.text)))
+    chips.appendChild(c)
+  }
+  return chips
+}
+
+function chipRow(items: string[]): HTMLElement {
+  const chips = el('div', 'chips')
+  for (const s of items) {
+    const c = el('button', 'chip', s)
     c.addEventListener('click', () => submit(s))
     chips.appendChild(c)
   }
   return chips
 }
 
-function showWelcome(): void {
+async function showWelcome(): Promise<void> {
   const box = el('div', 'welcome')
   const hour = new Date().getHours()
   const greet = hour < 5 ? 'Bonne nuit' : hour < 12 ? 'Bonjour' : hour < 18 ? 'Bon après-midi' : 'Bonsoir'
   box.appendChild(el('h1', null, `${greet} 👋`))
   box.appendChild(el('p', null, 'Je gère ton Todoist et ton planning. Dis-moi ce qu\'il y a à organiser, ou pioche ci-dessous.'))
 
-  const recent = recentPrompts.slice(0, RECENT_SHOWN)
-  if (recent.length) {
-    box.appendChild(el('div', 'chips-label', 'Tes demandes récentes'))
-    box.appendChild(chipRow(recent, 'recent'))
+  thread.appendChild(box)
+
+  let frequent: Suggestion[] = []
+  try { frequent = await api.suggestions() } catch {}
+  // La conversation a pu démarrer pendant l'attente : l'accueil n'est plus là.
+  if (!box.isConnected) return
+  if (frequent.length) {
+    box.appendChild(el('div', 'chips-label', 'Tes demandes les plus fréquentes'))
+    box.appendChild(frequentRow(frequent))
     box.appendChild(el('div', 'chips-label', 'Idées'))
   }
-  const taken = new Set(recent.map((p) => p.toLowerCase()))
-  box.appendChild(chipRow(SUGGESTIONS.filter((s) => !taken.has(s.toLowerCase())), ''))
-  thread.appendChild(box)
+  box.appendChild(chipRow(SUGGESTIONS))
 }
 
 function dropWelcome(): void {
@@ -416,7 +426,6 @@ function submit(forced?: string): void {
   // tour en cours, l'agent le prend en compte et recalcule sa réponse.
   const queued = busy
   pushUserMessage(text, queued)
-  rememberPrompt(text)
   api.send(text)
   input.value = ''
   autoGrow()
@@ -553,7 +562,6 @@ api.onEvent((evt) => {
 
 const state = await api.init()
 modelSelect.value = state.config.model
-recentPrompts = Array.isArray(state.recentPrompts) ? state.recentPrompts : []
-showWelcome()
+void showWelcome()
 setBusy(false)
 input.focus()

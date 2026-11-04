@@ -7,6 +7,7 @@ const { contextBridge, ipcRenderer } = require('electron') as typeof import('ele
 
 const api: AssistantApi = {
   init: () => ipcRenderer.invoke('app:init'),
+  suggestions: () => ipcRenderer.invoke('app:suggestions'),
   send: (text) => ipcRenderer.send('chat:send', text),
   interrupt: () => ipcRenderer.send('chat:interrupt'),
   newChat: () => ipcRenderer.send('chat:new'),

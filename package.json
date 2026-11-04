@@ -11,7 +11,7 @@
     "build:ts": "rm -rf dist && tsc -p tsconfig.json && tsc -p tsconfig.renderer.json && cp src/renderer/index.html src/renderer/style.css dist/src/renderer/",
     "typecheck": "tsc -p tsconfig.json --noEmit && tsc -p tsconfig.renderer.json --noEmit",
     "start": "npm run build:ts && electron .",
-    "test": "node scripts/impact-test.ts && node scripts/undo-test.ts",
+    "test": "node scripts/impact-test.ts && node scripts/undo-test.ts && node scripts/suggestions-test.ts",
     "selftest": "node scripts/selftest.ts",
     "preview": "npm run build:ts && electron dist/scripts/preview.js",
     "icon": "bash scripts/make-icon.sh",

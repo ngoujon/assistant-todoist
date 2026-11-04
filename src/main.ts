@@ -5,7 +5,8 @@ import { fileURLToPath } from 'node:url'
 import { AgentSession } from './agent/session.ts'
 import { PROMPT_VERSION } from './agent/prompt.ts'
 import type { RegistrySnapshot } from './agent/registry.ts'
-import type { AgentEvent, ConfigPatch, InitState } from './shared/types.ts'
+import { frequentSuggestions } from './suggestions.ts'
+import type { AgentEvent, ConfigPatch, InitState, Suggestion } from './shared/types.ts'
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url))
 
@@ -21,8 +22,11 @@ interface AppConfig {
    * ils vivent dans config.json, sur la machine, jamais dans le dépôt.
    */
   ignoredLabels: string[]
-  /** Dernières demandes envoyées, la plus récente d'abord : local, jamais dans le dépôt. */
-  recentPrompts: string[]
+  /**
+   * Demandes envoyées, de la plus ancienne à la plus récente, pour compter les plus
+   * fréquentes : local, jamais dans le dépôt.
+   */
+  promptHistory: string[]
 }
 
 const DEFAULT_CONFIG: AppConfig = {
@@ -34,7 +38,7 @@ const DEFAULT_CONFIG: AppConfig = {
   lastSessionId: null,
   promptVersion: 0,
   ignoredLabels: [],
-  recentPrompts: [],
+  promptHistory: [],
 }
 
 const MODEL_SUCCESSORS: Record<string, string> = {
@@ -45,34 +49,30 @@ const MODEL_SUCCESSORS: Record<string, string> = {
   'claude-fable-5': 'claude-fable-5-1',
 }
 
-/** Combien de demandes récentes on garde pour les boutons de l'accueil. */
-const RECENT_MAX = 6
+/** Assez de demandes pour que les fréquences veuillent dire quelque chose. */
+const HISTORY_MAX = 500
 
-/** Retient une demande en tête de liste, sans doublon (casse et espaces ignorés). */
+/** Ajoute une demande à l'historique local des demandes. */
 function rememberPrompt(text: string): void {
   const clean = text.trim().replace(/\s+/g, ' ')
-  // Une longue consigne ne fait pas un bon bouton : on ne garde que les demandes courtes.
-  if (!clean || clean.length > 140) return
-  const key = clean.toLowerCase()
-  config.recentPrompts = [clean, ...config.recentPrompts.filter((p) => p.toLowerCase() !== key)].slice(0, RECENT_MAX)
+  if (!clean) return
+  config.promptHistory = [...config.promptHistory, clean.slice(0, 300)].slice(-HISTORY_MAX)
   saveConfig()
 }
 
 /**
- * Premier lancement après la mise à jour : la liste est vide, alors on la remplit
- * avec les dernières demandes trouvées dans l'historique des conversations que
- * Claude Code garde pour l'espace de travail. Tout reste sur la machine.
+ * Premier lancement : l'historique local est vide, alors on le remplit avec les
+ * demandes trouvées dans les conversations que Claude Code garde pour l'espace de
+ * travail. Tout reste sur la machine.
  */
-function seedRecentPrompts(): void {
-  if (config.recentPrompts.length) return
+function seedPromptHistory(): void {
+  if (config.promptHistory.length) return
   try {
     const base = process.env.CLAUDE_CONFIG_DIR || path.join(app.getPath('home'), '.claude')
     const dir = path.join(base, 'projects', workspace.replace(/[^a-zA-Z0-9]/g, '-'))
     const files = fs.readdirSync(dir)
       .filter((f) => f.endsWith('.jsonl'))
       .map((f) => ({ f, t: fs.statSync(path.join(dir, f)).mtimeMs }))
-      .sort((a, b) => b.t - a.t)
-      .slice(0, 10)
     const found: { ts: string, text: string }[] = []
     for (const { f } of files) {
       for (const line of fs.readFileSync(path.join(dir, f), 'utf8').split('\n')) {
@@ -90,10 +90,13 @@ function seedRecentPrompts(): void {
         } catch {}
       }
     }
-    // Du plus ancien au plus récent : chaque demande retenue passe devant la précédente.
     found.sort((a, b) => a.ts.localeCompare(b.ts))
     for (const { text } of found) rememberPrompt(text)
   } catch {}
+}
+
+function currentSuggestions(): Suggestion[] {
+  return frequentSuggestions(config.promptHistory)
 }
 
 let config: AppConfig = { ...DEFAULT_CONFIG }
@@ -135,8 +138,13 @@ function migrateConfig(): void {
     config.model = successor
     changed = true
   }
-  if (!Array.isArray(config.recentPrompts)) {
-    config.recentPrompts = []
+  if (!Array.isArray(config.promptHistory)) {
+    config.promptHistory = []
+    changed = true
+  }
+  // Brève version qui ne gardait que les dernières demandes : remplacée par l'historique.
+  if ('recentPrompts' in stored) {
+    delete stored.recentPrompts
     changed = true
   }
   // Réglages d'une époque où l'inférence tournait sur un serveur local, et d'un mode
@@ -347,11 +355,12 @@ function wireIpc(): void {
     setImmediate(flushEvents)
     return {
       config: { model: config.model },
-      recentPrompts: [...config.recentPrompts],
       workspace,
       version: app.getVersion(),
     }
   })
+
+  ipcMain.handle('app:suggestions', (): Suggestion[] => currentSuggestions())
 
   ipcMain.on('chat:send', (_e, text: unknown) => {
     if (typeof text !== 'string' || !text.trim()) return
@@ -453,7 +462,7 @@ if (!app.requestSingleInstanceLock()) {
     nativeTheme.themeSource = 'system'
     loadConfig()
     ensureWorkspace()
-    seedRecentPrompts()
+    seedPromptHistory()
     createWindow()
     buildMenu()
     wireIpc()
